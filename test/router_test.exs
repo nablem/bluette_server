@@ -37,10 +37,6 @@ defmodule BluetteServer.RouterTest do
                "name" => nil,
                "profile_picture" => nil,
                "uid" => "user_1"
-             },
-             "onboarding" => %{
-               "completed" => false,
-               "missing_fields" => ["name", "age", "audio_bio", "profile_picture"]
              }
            }
   end
@@ -62,71 +58,78 @@ defmodule BluetteServer.RouterTest do
     assert Jason.decode!(conn.resp_body) == %{"authenticated" => false, "error" => "invalid_token"}
   end
 
-  test "onboarding step endpoints complete profile progressively" do
+  test "profile detail endpoints update fields without onboarding payload" do
     _login =
       conn(:post, "/api/v1/auth/verify")
       |> put_req_header("authorization", "Bearer mock:user_2:user2@example.com")
       |> Router.call([])
 
-    step1 =
-      authed_json_conn(:put, "/api/v1/onboarding/step-1", %{"name" => "Nabil", "age" => 27})
+    update_name =
+      authed_json_conn(:put, "/api/v1/profile/name", %{"name" => "Nabil"})
       |> Router.call([])
 
-    assert step1.status == 200
-
-    assert Jason.decode!(step1.resp_body)["onboarding"] == %{
-             "completed" => false,
-             "missing_fields" => ["audio_bio", "profile_picture"]
+    assert update_name.status == 200
+    assert Jason.decode!(update_name.resp_body) == %{
+             "user" => %{
+               "age" => nil,
+               "audio_bio" => nil,
+               "email" => "user2@example.com",
+               "name" => "Nabil",
+               "profile_picture" => nil,
+               "uid" => "user_2"
+             }
            }
 
-    step2 =
-      authed_json_conn(:put, "/api/v1/onboarding/step-2", %{"audio_bio" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/audio1.m4a"})
+    update_age =
+      authed_json_conn(:put, "/api/v1/profile/age", %{"age" => 27})
       |> Router.call([])
 
-    assert step2.status == 200
+    assert update_age.status == 200
+    refute Map.has_key?(Jason.decode!(update_age.resp_body), "onboarding")
 
-    assert Jason.decode!(step2.resp_body)["onboarding"] == %{
-             "completed" => false,
-             "missing_fields" => ["profile_picture"]
-           }
-
-    step3 =
-      authed_json_conn(:put, "/api/v1/onboarding/step-3", %{"profile_picture" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie1.jpg"})
+    update_audio_bio =
+      authed_json_conn(:put, "/api/v1/profile/audio-bio", %{"audio_bio" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/audio1.m4a"})
       |> Router.call([])
 
-    assert step3.status == 200
-    assert Jason.decode!(step3.resp_body)["onboarding"] == %{"completed" => true, "missing_fields" => []}
+    assert update_audio_bio.status == 200
+    refute Map.has_key?(Jason.decode!(update_audio_bio.resp_body), "onboarding")
+
+    update_profile_picture =
+      authed_json_conn(:put, "/api/v1/profile/profile-picture", %{"profile_picture" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie1.jpg"})
+      |> Router.call([])
+
+    assert update_profile_picture.status == 200
+    refute Map.has_key?(Jason.decode!(update_profile_picture.resp_body), "onboarding")
   end
 
-  test "step 1 validates required fields" do
+  test "profile age validates required fields" do
     _login =
       conn(:post, "/api/v1/auth/verify")
       |> put_req_header("authorization", "Bearer mock:user_3:user3@example.com")
       |> Router.call([])
 
     response =
-      authed_json_conn(:put, "/api/v1/onboarding/step-1", %{"age" => 17})
+      conn(:put, "/api/v1/profile/age", Jason.encode!(%{"age" => 17}))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer mock:user_3:user3@example.com")
       |> Router.call([])
 
     assert response.status == 422
 
     assert Jason.decode!(response.resp_body) == %{
              "error" => "validation_failed",
-             "details" => %{
-               "age" => ["must be greater than or equal to 18"],
-               "name" => ["can't be blank"]
-             }
+             "details" => %{"age" => ["must be greater than or equal to 18"]}
            }
   end
 
-  test "step 2 requires a valid URL" do
+  test "profile audio bio requires a valid URL" do
     _login =
       conn(:post, "/api/v1/auth/verify")
       |> put_req_header("authorization", "Bearer mock:user_5:user5@example.com")
       |> Router.call([])
 
     response =
-      conn(:put, "/api/v1/onboarding/step-2", Jason.encode!(%{"audio_bio" => "audio://bio"}))
+      conn(:put, "/api/v1/profile/audio-bio", Jason.encode!(%{"audio_bio" => "audio://bio"}))
       |> put_req_header("content-type", "application/json")
       |> put_req_header("authorization", "Bearer mock:user_5:user5@example.com")
       |> Router.call([])
@@ -166,20 +169,26 @@ defmodule BluetteServer.RouterTest do
       |> put_req_header("authorization", "Bearer mock:user_6:user6@example.com")
       |> Router.call([])
 
-    _step1 =
-      conn(:put, "/api/v1/onboarding/step-1", Jason.encode!(%{"name" => "Jane", "age" => 30}))
+    _name =
+      conn(:put, "/api/v1/profile/name", Jason.encode!(%{"name" => "Jane"}))
       |> put_req_header("content-type", "application/json")
       |> put_req_header("authorization", "Bearer mock:user_6:user6@example.com")
       |> Router.call([])
 
-    _step2 =
-      conn(:put, "/api/v1/onboarding/step-2", Jason.encode!(%{"audio_bio" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/audio6.m4a"}))
+    _age =
+      conn(:put, "/api/v1/profile/age", Jason.encode!(%{"age" => 30}))
       |> put_req_header("content-type", "application/json")
       |> put_req_header("authorization", "Bearer mock:user_6:user6@example.com")
       |> Router.call([])
 
-    _step3 =
-      conn(:put, "/api/v1/onboarding/step-3", Jason.encode!(%{"profile_picture" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie6.jpg"}))
+    _audio =
+      conn(:put, "/api/v1/profile/audio-bio", Jason.encode!(%{"audio_bio" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/audio6.m4a"}))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer mock:user_6:user6@example.com")
+      |> Router.call([])
+
+    _picture =
+      conn(:put, "/api/v1/profile/profile-picture", Jason.encode!(%{"profile_picture" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie6.jpg"}))
       |> put_req_header("content-type", "application/json")
       |> put_req_header("authorization", "Bearer mock:user_6:user6@example.com")
       |> Router.call([])

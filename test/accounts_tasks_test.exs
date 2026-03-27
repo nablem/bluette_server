@@ -30,9 +30,10 @@ defmodule BluetteServer.AccountsTasksTest do
 
   test "clear_user_details removes onboarding details for an existing user" do
     {:ok, _user} = Accounts.get_or_create_from_claims(%{uid: "user_1", email: "user1@example.com"})
-    {:ok, user} = Accounts.get_user_by_uid("user_1") |> Accounts.update_step1(%{"name" => "Nabil", "age" => 28})
-    {:ok, user} = Accounts.update_step2(user, %{"audio_bio" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/audio1.m4a"})
-    {:ok, _user} = Accounts.update_step3(user, %{"profile_picture" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie1.jpg"})
+    {:ok, user} = Accounts.get_user_by_uid("user_1") |> Accounts.update_name(%{"name" => "Nabil"})
+    {:ok, user} = Accounts.update_age(user, %{"age" => 28})
+    {:ok, user} = Accounts.update_audio_bio(user, %{"audio_bio" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/audio1.m4a"})
+    {:ok, _user} = Accounts.update_profile_picture(user, %{"profile_picture" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie1.jpg"})
 
     assert {:ok, cleared_user} = Accounts.clear_user_details("user_1")
     assert cleared_user.name == nil
@@ -46,21 +47,5 @@ defmodule BluetteServer.AccountsTasksTest do
     Mix.Tasks.Bluette.SeedFakeProfiles.run(["5"])
 
     assert Accounts.count_users() == 5
-  end
-
-  test "mix bluette.reset_mock_user clears default mock bearer user details" do
-    {:ok, _user} = Accounts.get_or_create_from_claims(%{uid: "user_1", email: "user1@example.com"})
-    {:ok, user} = Accounts.get_user_by_uid("user_1") |> Accounts.update_step1(%{"name" => "Nabil", "age" => 28})
-    {:ok, user} = Accounts.update_step2(user, %{"audio_bio" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/audio1.m4a"})
-    {:ok, _user} = Accounts.update_step3(user, %{"profile_picture" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie1.jpg"})
-
-    Mix.Task.reenable("bluette.reset_mock_user")
-    Mix.Tasks.Bluette.ResetMockUser.run([])
-
-    user = Accounts.get_user_by_uid("user_1")
-    assert user.name == nil
-    assert user.age == nil
-    assert user.audio_bio == nil
-    assert user.profile_picture == nil
   end
 end

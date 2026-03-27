@@ -49,21 +49,27 @@ defmodule BluetteServer.Accounts do
     end
   end
 
-  def update_step1(%User{} = user, attrs) do
+  def update_name(%User{} = user, attrs) do
     user
-    |> User.step1_changeset(attrs)
+    |> User.name_changeset(attrs)
     |> Repo.update()
   end
 
-  def update_step2(%User{} = user, attrs) do
+  def update_age(%User{} = user, attrs) do
     user
-    |> User.step2_changeset(attrs)
+    |> User.age_changeset(attrs)
     |> Repo.update()
   end
 
-  def update_step3(%User{} = user, attrs) do
+  def update_audio_bio(%User{} = user, attrs) do
     user
-    |> User.step3_changeset(attrs)
+    |> User.audio_bio_changeset(attrs)
+    |> Repo.update()
+  end
+
+  def update_profile_picture(%User{} = user, attrs) do
+    user
+    |> User.profile_picture_changeset(attrs)
     |> Repo.update()
   end
 

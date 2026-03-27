@@ -7,7 +7,7 @@ This repository currently contains Iteration 2:
 - Local HTTP server (Plug + Cowboy)
 - SQLite database via Ecto
 - Auth login/verify endpoint with user upsert
-- Multi-step onboarding endpoints
+- Field-based profile detail endpoints
 - Home endpoint placeholder
 - ExUnit coverage for onboarding behavior
 
@@ -38,26 +38,33 @@ Auth verify/login (creates user if missing):
 - URL: http://localhost:4000/api/v1/auth/verify
 - Header: Authorization = Bearer mock:user_1:user1@example.com
 
-Onboarding step 1 (name + age):
+Update name:
 
 - Method: PUT
-- URL: http://localhost:4000/api/v1/onboarding/step-1
+- URL: http://localhost:4000/api/v1/profile/name
 - Header: Authorization = Bearer mock:user_1:user1@example.com
-- Body (JSON): {"name":"Nabil","age":27}
+- Body (JSON): {"name":"Nabil"}
+
+Update age:
+
+- Method: PUT
+- URL: http://localhost:4000/api/v1/profile/age
+- Header: Authorization = Bearer mock:user_1:user1@example.com
+- Body (JSON): {"age":27}
 - Rule: age must be between 18 and 120 (inclusive)
 
-Onboarding step 2 (audio bio):
+Update audio bio:
 
 - Method: PUT
-- URL: http://localhost:4000/api/v1/onboarding/step-2
+- URL: http://localhost:4000/api/v1/profile/audio-bio
 - Header: Authorization = Bearer mock:user_1:user1@example.com
 - Body (JSON): {"audio_bio":"https://firebasestorage.googleapis.com/v0/b/bluette/o/audio1.m4a"}
 - Rule: must be a valid http/https URL (Firebase Storage URL)
 
-Onboarding step 3 (profile picture):
+Update profile picture:
 
 - Method: PUT
-- URL: http://localhost:4000/api/v1/onboarding/step-3
+- URL: http://localhost:4000/api/v1/profile/profile-picture
 - Header: Authorization = Bearer mock:user_1:user1@example.com
 - Body (JSON): {"profile_picture":"https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie1.jpg"}
 - Rule: must be a valid http/https URL (Firebase Storage URL)
@@ -106,18 +113,20 @@ Seed a custom number of fake completed profiles:
 
 mix bluette.seed_fake_profiles 50
 
-Clear onboarding details for the default mock bearer user (`mock:user_1:user1@example.com`):
+Clear onboarding details for the mock bearer user via iex:
 
-mix bluette.reset_mock_user
+iex> BluetteServer.Accounts.clear_user_details("user_1")
+{:ok, %BluetteServer.Accounts.User{...}}
 
-Clear onboarding details for a specific user by Firebase uid:
+Clear onboarding details for a specific user by Firebase uid via iex:
 
-mix bluette.reset_mock_user user_42
+iex> BluetteServer.Accounts.clear_user_details("user_42")
+{:ok, %BluetteServer.Accounts.User{...}}
 
 Current suite covers:
 
 - Mock token parsing
 - Auth login with user upsert
-- Onboarding step validation and completion path
+- Field-based profile detail validation and update path
 - Home placeholder endpoint response
 

@@ -20,15 +20,21 @@ defmodule BluetteServer.Accounts.User do
     |> unique_constraint(:firebase_uid)
   end
 
-  def step1_changeset(user, attrs) do
+  def name_changeset(user, attrs) do
     user
-    |> cast(attrs, [:name, :age])
-    |> validate_required([:name, :age])
+    |> cast(attrs, [:name])
+    |> validate_required([:name])
     |> validate_length(:name, min: 1, max: 80)
+  end
+
+  def age_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:age])
+    |> validate_required([:age])
     |> validate_number(:age, greater_than_or_equal_to: 18, less_than_or_equal_to: 120)
   end
 
-  def step2_changeset(user, attrs) do
+  def audio_bio_changeset(user, attrs) do
     user
     |> cast(attrs, [:audio_bio])
     |> validate_required([:audio_bio])
@@ -36,7 +42,7 @@ defmodule BluetteServer.Accounts.User do
     |> validate_url(:audio_bio)
   end
 
-  def step3_changeset(user, attrs) do
+  def profile_picture_changeset(user, attrs) do
     user
     |> cast(attrs, [:profile_picture])
     |> validate_required([:profile_picture])
