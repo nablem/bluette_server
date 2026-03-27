@@ -1,166 +1,524 @@
 # Bluette Server
 
-Backend API for the Bluette mobile app (Elixir, Plug/Cowboy, Ecto).
+Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
 
-## Current Feature Scope
+---
 
-- Firebase-based authentication boundary (mock in dev/test, real verifier in prod).
-- Profile and settings management.
-- Onboarding completeness tracking.
-- Homepage swipe stack.
-- Mutual-like meeting creation.
-- Meeting lock behavior: while a meeting is upcoming, swiping is disabled.
-- Meeting cancellation with visibility-rank penalty.
-- Automatic due-meeting transition (when scheduled time passes, stack returns).
-- Bars catalog import from JSON and nearest-open-bar selection for meetings.
-- Fake profile seeding for local development.
+## Table of Contents
 
-## Core Homepage Product Logic
+1. [Feature Scope](#feature-scope)
+2. [Product Logic](#product-logic)
+3. [Meeting Status Lifecycle](#meeting-status-lifecycle)
+4. [Stack Filtering Rules](#stack-filtering-rules)
+5. [Visibility Rank](#visibility-rank)
+6. [Data Model](#data-model)
+7. [API Reference](#api-reference)
+8. [Error Codes](#error-codes)
+9. [Auth](#auth)
+10. [Local Setup](#local-setup)
+11. [Development Utilities](#development-utilities)
+12. [Tests](#tests)
 
-1. Users see a stack of profiles one by one.
-2. Each profile can be swiped with `like` or `pass`.
-3. A mutual `like` creates a meeting instantly.
-4. While a meeting is upcoming, homepage shows meeting details and swiping is blocked.
-5. Stack returns when meeting is cancelled or when scheduled time is reached (meeting becomes `due`).
-6. Cancelling a meeting lowers the canceller's `visibility_rank`.
-7. Profiles with an upcoming meeting are hidden from everyone else's stack.
-8. Meeting place is the nearest bar that is open at the selected meeting slot (Paris timezone).
+---
 
-## Data Model Overview
+## Feature Scope
+
+- Firebase-based auth (mock in dev/test, real RS256 JWT verifier in prod).
+- Profile and settings management with onboarding completeness tracking.
+- Homepage swipe stack with preference + distance filtering.
+- Mutual-like meeting creation with nearest open bar selection.
+- Meeting status lifecycle: `upcoming` → `happening` → `due` / `cancelled`.
+- Meeting lock: swiping disabled while a meeting is active.
+- Cancellation with `visibility_rank` penalty.
+- Bars catalog import from JSON with weekday open-hours checking.
+
+---
+
+## Product Logic
+
+1. Users see one profile at a time in a swipe stack.
+2. Each profile can be swiped `like` or `pass`.
+3. A mutual `like` immediately creates a meeting at the nearest open bar.
+4. While a meeting is `upcoming` or `happening`, the home screen shows meeting details and swiping is blocked.
+5. The stack returns when:
+   - The meeting is cancelled, or
+   - 12 hours have elapsed since the meeting's `scheduled_for` time (status becomes `due`).
+6. Cancelling a meeting lowers the canceller's `visibility_rank` by 20 (floor 0).
+7. Profiles that have an active meeting (`upcoming` or `happening`) are hidden from everyone else's stack.
+8. A `pass` decision never creates a meeting, even if the other party already liked.
+
+---
+
+## Meeting Status Lifecycle
+
+```
+[future scheduled_for]
+     upcoming
+         │ scheduled_for reached
+         ▼
+     happening   ← stack still locked, 12h grace window
+         │ scheduled_for + 12h reached
+         ▼
+       due       ← stack unlocks
+```
+
+Cancellation can happen from `upcoming` or `happening`:
+
+```
+     upcoming ──► cancelled  ← visibility_rank − 20
+     happening ──► cancelled ← visibility_rank − 20
+```
+
+Status transitions are applied automatically on every call to `GET /api/v1/home`, `POST /api/v1/home/swipe`, and `POST /api/v1/home/meeting/cancel`.
+
+---
+
+## Stack Filtering Rules
+
+A candidate profile is shown only if **all** of the following are true:
+
+1. The candidate has a complete profile (`name`, `age`, `gender`, `audio_bio`, `profile_picture`, all preferences, location).
+2. The current user has not yet swiped on the candidate (any decision).
+3. The candidate has no active meeting (`upcoming` or `happening`).
+4. The candidate's `gender` matches the current user's `pref_gender` (or pref is `"everyone"`).
+5. The candidate's `age` is within the current user's `pref_min_age`–`pref_max_age`.
+6. The current user's `gender` matches the candidate's `pref_gender` (reciprocal).
+7. The current user's `age` is within the candidate's `pref_min_age`–`pref_max_age` (reciprocal).
+8. The haversine distance between the two users is within the current user's `pref_max_distance_km`.
+
+Candidates are ordered by `visibility_rank` descending, then by `id` ascending.
+
+---
+
+## Visibility Rank
+
+- Default: `100`.
+- Cancelling a meeting: `−20` (floor `0`).
+- Higher rank = shown earlier in others' stacks.
+- Reset is manual (no automatic recovery is implemented).
+
+---
+
+## Data Model
 
 ### `users`
 
-- Auth identity: `firebase_uid`, `email`.
-- Profile: `name`, `age`, `gender`, `audio_bio`, `profile_picture`.
-- Location: `latitude`, `longitude`.
-- Preferences: `pref_min_age`, `pref_max_age`, `pref_max_distance_km`, `pref_gender`.
-- Ranking: `visibility_rank` (lowered on meeting cancellation).
+| Field | Type | Notes |
+|---|---|---|
+| `firebase_uid` | string | unique, auth identity |
+| `email` | string | |
+| `name` | string | onboarding |
+| `age` | integer | onboarding |
+| `gender` | string | `male`, `female`, `other` |
+| `audio_bio` | string | URL, onboarding |
+| `profile_picture` | string | URL, onboarding |
+| `latitude` | float | |
+| `longitude` | float | |
+| `pref_min_age` | integer | onboarding |
+| `pref_max_age` | integer | onboarding |
+| `pref_max_distance_km` | integer | onboarding |
+| `pref_gender` | string | `male`, `female`, `other`, `everyone` — onboarding |
+| `visibility_rank` | integer | default 100 |
 
 ### `swipes`
 
-- `swiper_user_id`, `swiped_user_id`, `decision` (`like` or `pass`).
-- Unique pair index prevents duplicate rows for the same directed pair.
-- Re-swiping updates the existing decision.
+| Field | Type | Notes |
+|---|---|---|
+| `swiper_user_id` | integer | FK users |
+| `swiped_user_id` | integer | FK users |
+| `decision` | string | `like` or `pass` |
+
+Unique constraint on `(swiper_user_id, swiped_user_id)`. Re-swiping upserts the decision.
 
 ### `meetings`
 
-- `user_a_id`, `user_b_id`.
-- `status` (`upcoming`, `due`, or `cancelled`).
-- `scheduled_for` (between next day and 72h, evening slot, Paris timezone).
-- `place_name`, `place_latitude`, `place_longitude`.
-- `cancelled_by_user_id`.
+| Field | Type | Notes |
+|---|---|---|
+| `user_a_id` | integer | FK users |
+| `user_b_id` | integer | FK users |
+| `status` | string | `upcoming`, `happening`, `due`, `cancelled` |
+| `scheduled_for` | utc_datetime | evening slot, Paris timezone |
+| `place_name` | string | |
+| `place_latitude` | float | |
+| `place_longitude` | float | |
+| `cancelled_by_user_id` | integer | FK users, nullable |
 
 ### `bars`
 
-- `google_place_id`, `name`, `address`, `locality`, `region_code`.
-- `latitude`, `longitude`.
-- `availability` (weekday opening windows).
-- `google_maps_uri`, `timezone`.
+| Field | Type | Notes |
+|---|---|---|
+| `google_place_id` | string | unique |
+| `name` | string | |
+| `address` | string | |
+| `locality` | string | |
+| `region_code` | string | |
+| `latitude` | float | |
+| `longitude` | float | |
+| `availability` | map | `{ "monday": { "start": "HH:MM", "end": "HH:MM" }, … }` |
+| `google_maps_uri` | string | |
+| `timezone` | string | e.g. `Europe/Paris` |
 
-## API Endpoints
+---
 
-### Health
+## API Reference
 
-- `GET /health`
+All endpoints except `GET /health` require an `Authorization: Bearer <token>` header.
+All request and response bodies are JSON. All timestamps are UTC ISO 8601.
 
-### Auth
+---
 
-- `POST /api/v1/auth/verify`
-  - Uses bearer token claims to upsert/fetch user.
+### `GET /health`
 
-### Profile / Settings
+No auth required.
 
-- `GET /api/v1/profile`
-- `PUT /api/v1/profile/name`
-- `PUT /api/v1/profile/age`
-- `PUT /api/v1/profile/gender`
-- `PUT /api/v1/profile/audio-bio`
-- `PUT /api/v1/profile/profile-picture`
-- `PUT /api/v1/profile/location`
-- `PUT /api/v1/profile/matching-preferences`
-- `DELETE /api/v1/profile`
+**Response `200`:**
+```json
+{ "status": "ok", "service": "bluette_server" }
+```
 
-### Homepage / Matching
+---
 
-- `GET /api/v1/home`
-  - Returns `home.mode = "stack"` with next profile, or `home.mode = "meeting"` with upcoming meeting.
-  - Adds onboarding payload when profile is incomplete.
-- `POST /api/v1/home/swipe`
-  - Body: `{ "target_uid": "...", "decision": "like" | "pass" }`
-  - On mutual like: creates meeting and returns `match_created: true`.
-- `POST /api/v1/home/meeting/cancel`
-  - Cancels current upcoming meeting and restores stack mode.
+### `POST /api/v1/auth/verify`
 
-Meeting scheduling details:
+Verifies the bearer token and upserts the user. Call this on every app launch.
 
-- Schedules in evening slots over next day to 72h (Paris timezone).
-- Chooses nearest bar that is open at that exact slot.
-- Falls back to placeholder place only if bars catalog is empty.
+**Response `200`:**
+```json
+{
+  "authenticated": true,
+  "user": {
+    "uid": "user_1",
+    "email": "user1@example.com",
+    "name": "Nabil",
+    "age": 27,
+    "gender": "male",
+    "audio_bio": "https://...",
+    "profile_picture": "https://...",
+    "latitude": 48.867,
+    "longitude": 2.268
+  }
+}
+```
 
-## Auth Verifier by Environment
+**Response `401`:** Invalid or missing token.
 
-- dev/test: `BluetteServer.Auth.MockVerifier`
-- prod: `BluetteServer.Auth.FirebaseVerifier`
+---
 
-When Firebase verifier is active, `firebase_project_id` must be configured.
-Application startup fails fast if it is missing.
+### `GET /api/v1/profile`
+
+Returns the current user's profile and preferences.
+
+**Response `200`:**
+```json
+{
+  "user": { "uid": "...", "email": "...", "name": "...", "age": 27, "gender": "male", "audio_bio": "...", "profile_picture": "...", "latitude": 48.867, "longitude": 2.268 },
+  "preferences": { "min_age": 18, "max_age": 45, "max_distance_km": 50, "preferred_gender": "female" }
+}
+```
+
+---
+
+### `PUT /api/v1/profile/name`
+
+**Body:** `{ "name": "Nabil" }`
+**Response `200`:** `{ "user": { … } }`
+**Response `422`:** `{ "error": "validation_failed", "details": { "name": ["…"] } }`
+
+---
+
+### `PUT /api/v1/profile/age`
+
+**Body:** `{ "age": 27 }`
+**Response `200`:** `{ "user": { … } }`
+**Response `422`:** validation error
+
+---
+
+### `PUT /api/v1/profile/gender`
+
+**Body:** `{ "gender": "male" }` — values: `male`, `female`, `other`
+**Response `200`:** `{ "user": { … } }`
+**Response `422`:** validation error
+
+---
+
+### `PUT /api/v1/profile/audio-bio`
+
+**Body:** `{ "audio_bio": "https://…" }`
+**Response `200`:** `{ "user": { … } }`
+**Response `422`:** validation error
+
+---
+
+### `PUT /api/v1/profile/profile-picture`
+
+**Body:** `{ "profile_picture": "https://…" }`
+**Response `200`:** `{ "user": { … } }`
+**Response `422`:** validation error
+
+---
+
+### `PUT /api/v1/profile/location`
+
+**Body:** `{ "latitude": 48.867, "longitude": 2.268 }`
+**Response `200`:** `{ "user": { … } }`
+**Response `422`:** validation error
+
+---
+
+### `PUT /api/v1/profile/matching-preferences`
+
+**Body:**
+```json
+{ "min_age": 18, "max_age": 45, "max_distance_km": 50, "preferred_gender": "female" }
+```
+`preferred_gender` values: `male`, `female`, `other`, `everyone`
+
+**Response `200`:** `{ "preferences": { "min_age": …, "max_age": …, "max_distance_km": …, "preferred_gender": … } }`
+**Response `422`:** validation error
+
+---
+
+### `DELETE /api/v1/profile`
+
+Deletes the account entirely.
+
+**Response `204`:** No body.
+**Response `500`:** Unexpected error.
+
+---
+
+### `GET /api/v1/home`
+
+Main polling endpoint. Applies status transitions before returning. Call this when the app launches or resumes.
+
+**Stack mode** (no active meeting):
+```json
+{
+  "home": {
+    "mode": "stack",
+    "can_swipe": true,
+    "profile": {
+      "uid": "seeded_user_2",
+      "name": "Luna",
+      "age": 26,
+      "gender": "female",
+      "audio_bio": "https://…",
+      "profile_picture": "https://…"
+    }
+  }
+}
+```
+
+`profile` is `null` when no candidates remain.
+
+**Meeting mode** (active meeting exists):
+```json
+{
+  "home": {
+    "mode": "meeting",
+    "can_swipe": false,
+    "meeting": {
+      "id": 1,
+      "status": "upcoming",
+      "scheduled_for": "2026-03-28T17:00:00Z",
+      "place": {
+        "name": "Bar 8",
+        "latitude": 48.8669,
+        "longitude": 2.3271
+      },
+      "with_user": {
+        "uid": "seeded_user_17",
+        "name": "Alice",
+        "age": 20,
+        "gender": "female",
+        "audio_bio": "https://…",
+        "profile_picture": "https://…"
+      }
+    }
+  }
+}
+```
+
+`meeting.status` can be `"upcoming"` (future) or `"happening"` (within 12h grace window). The app can use this to differentiate UI — e.g. show a countdown banner when `"happening"`.
+
+**With incomplete onboarding** (additional key when profile is not complete):
+```json
+{
+  "home": { "mode": "stack", "can_swipe": false, "profile": null },
+  "onboarding": {
+    "missing_fields": ["name", "age", "audio_bio"]
+  }
+}
+```
+
+When `missing_fields` is non-empty, direct the user to the settings screen before showing the stack.
+
+---
+
+### `POST /api/v1/home/swipe`
+
+Records a swipe decision. Blocked while any active meeting exists.
+
+**Body:** `{ "target_uid": "seeded_user_2", "decision": "like" }`
+
+`decision` values: `like`, `pass`
+
+**Response `200` — no match:**
+```json
+{
+  "swipe": { "match_created": false },
+  "home": { "mode": "stack", "can_swipe": true, "profile": { … } }
+}
+```
+
+**Response `200` — match created:**
+```json
+{
+  "swipe": {
+    "match_created": true,
+    "meeting": {
+      "id": 1,
+      "status": "upcoming",
+      "scheduled_for": "2026-03-28T17:00:00Z",
+      "place": { "name": "Bar 8", "latitude": 48.8669, "longitude": 2.3271 },
+      "with_user": { "uid": "…", "name": "…", "age": 26, "gender": "female", "audio_bio": "…", "profile_picture": "…" }
+    }
+  },
+  "home": { "mode": "meeting", "can_swipe": false, "meeting": { … } }
+}
+```
+
+**Response `409`:** Blocked — see [Error Codes](#error-codes).
+**Response `422`:** Missing or invalid fields.
+
+---
+
+### `POST /api/v1/home/meeting/cancel`
+
+Cancels the current active meeting (`upcoming` or `happening`). Lowers the caller's `visibility_rank` by 20.
+
+**Body:** `{}` (empty)
+
+**Response `200`:**
+```json
+{
+  "meeting": { "status": "cancelled" },
+  "home": { "mode": "stack", "can_swipe": true, "profile": { … } }
+}
+```
+
+The cancelled party's home will also return `stack` mode on their next poll.
+
+**Response `404`:** `{ "error": "no_upcoming_meeting" }` — no active meeting to cancel.
+
+---
+
+## Error Codes
+
+| HTTP | `error` value | Meaning |
+|---|---|---|
+| `401` | `missing_bearer_token` | No `Authorization` header |
+| `401` | `invalid_token` | Token failed verification |
+| `404` | `not_found` | Route does not exist |
+| `404` | `no_upcoming_meeting` | Cancel attempted with no active meeting |
+| `409` | `meeting_in_progress` | Swipe blocked — caller has an active meeting |
+| `409` | `target_unavailable` | Swipe blocked — target user has an active meeting |
+| `409` | `target_not_found` | `target_uid` does not exist |
+| `409` | `cannot_swipe_self` | `target_uid` matches the caller |
+| `422` | `validation_failed` | Request body missing or invalid fields |
+
+---
+
+## Auth
+
+### Environment split
+
+| Environment | Verifier | Token format |
+|---|---|---|
+| `dev` | `MockVerifier` | `mock:<uid>:<email>` |
+| `test` | `MockVerifier` | `mock:<uid>:<email>` |
+| `prod` | `FirebaseVerifier` | Firebase RS256 JWT |
+
+### Mock token format
+
+`Authorization: Bearer mock:user_1:user1@example.com`
+
+### Firebase (prod)
+
+Set `FIREBASE_PROJECT_ID` env var. Application fails to start if missing.
+
+### Flutter mobile test flow
+
+1. Enable Google sign-in in Firebase console.
+2. Sign in from Flutter using `firebase_auth`.
+3. Get ID token: `await FirebaseAuth.instance.currentUser!.getIdToken()`
+4. Send as bearer: `Authorization: Bearer <id_token>`
+5. Call `POST /api/v1/auth/verify` — expect `200 authenticated: true`.
+
+Android emulator: replace `localhost` with `10.0.2.2`.
+
+---
 
 ## Local Setup
 
-1. Install dependencies:
+```sh
+mix deps.get
+mix ecto.migrate
+mix bluette.import_bars          # load bars catalog
+mix bluette.seed_fake_profiles   # 30 fake users
+mix run --no-halt                # server at http://localhost:4000
+```
 
-   mix deps.get
-
-2. Run migrations:
-
-   mix ecto.migrate
-
-3. Start server:
-
-   mix run --no-halt
-
-4. Base URL:
-
-   http://localhost:4000
-
-## Mock Token Format (dev/test)
-
-`mock:<uid>:<email>`
-
-Examples:
-
-- `mock:user_1:user1@example.com`
-- `mock:nabil:nabil@example.com`
-
-## Firebase Mobile Test Flow
-
-1. Enable Google sign-in in Firebase.
-2. Sign in from Flutter using Firebase Auth.
-3. Send Firebase ID token as bearer token to `POST /api/v1/auth/verify`.
-4. Expect `200` with `authenticated: true` and matching `uid/email`.
-5. Use the same bearer token on protected endpoints.
-
-Android emulator note: use `10.0.2.2` instead of `localhost`.
+---
 
 ## Development Utilities
 
-Seed fake completed profiles:
+### Seed profiles
 
-- `mix bluette.seed_fake_profiles`
-- `mix bluette.seed_fake_profiles 50`
+```sh
+mix bluette.seed_fake_profiles
+mix bluette.seed_fake_profiles 50
+```
 
-Import bars catalog JSON (default root file or custom path):
+### Import bars catalog
 
-- `mix bluette.import_bars`
-- `mix bluette.import_bars bars_Paris_1st_arrondissement.json`
+```sh
+mix bluette.import_bars
+mix bluette.import_bars bars_Paris_1st_arrondissement.json
+```
 
-Clear onboarding details via iex:
+### IEx helpers
 
-- `BluetteServer.Accounts.clear_user_details("user_1")`
+Start console: `iex -S mix`
+
+**Make all seeded profiles like your mock user** (next like you send triggers a match):
+```elixir
+alias BluetteServer.{Repo, Accounts.Swipe, Accounts.User}; import Ecto.Query; target = Repo.get_by!(User, firebase_uid: "user_1"); now = DateTime.utc_now() |> DateTime.truncate(:second); entries = Repo.all(from u in User, where: u.firebase_uid != "user_1") |> Enum.map(&%{swiper_user_id: &1.id, swiped_user_id: target.id, decision: "like", inserted_at: now, updated_at: now}); Repo.insert_all(Swipe, entries, on_conflict: {:replace, [:decision, :updated_at]}, conflict_target: [:swiper_user_id, :swiped_user_id])
+```
+
+**Reset all swipes** (restore full stack):
+```elixir
+alias BluetteServer.{Repo, Accounts.Swipe}; Repo.delete_all(Swipe)
+```
+
+**Check your visibility rank:**
+```elixir
+alias BluetteServer.{Repo, Accounts.User}; Repo.get_by!(User, firebase_uid: "user_1").visibility_rank
+```
+
+**Clear onboarding fields:**
+```elixir
+BluetteServer.Accounts.clear_user_details("user_1")
+```
+
+---
 
 ## Tests
 
-Run full suite:
+```sh
+mix test
+```
 
-`mix test`
+49 tests, covering: auth verifiers, profile settings, onboarding, stack filtering, swipe decisions, match creation, meeting lifecycle (upcoming → happening → due), cancellation, visibility rank, edge cases (pass with reciprocal like, swipe during happening meeting, cancel with no meeting, other party's view after cancel).
 

@@ -17,6 +17,7 @@ defmodule BluetteServer.Accounts do
   @seed_max_distance_km [5, 10, 25, 50, 100]
   @default_visibility_rank 100
   @meeting_cancellation_penalty 20
+  @due_meeting_grace_hours 12
   @meeting_placeholder_place "closest_bar_pending_import"
   @paris_timezone "Europe/Paris"
   @weekdays ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -118,6 +119,7 @@ defmodule BluetteServer.Accounts do
 
   def home_payload(%User{} = user) do
     mark_due_meetings_for_user(user.id)
+    mark_happening_meetings_for_user(user.id)
 
     case upcoming_meeting_for(user.id) do
       nil ->
@@ -138,6 +140,7 @@ defmodule BluetteServer.Accounts do
 
   def swipe_profile(%User{} = user, attrs) when is_map(attrs) do
     mark_due_meetings_for_user(user.id)
+    mark_happening_meetings_for_user(user.id)
 
     with :ok <- ensure_user_can_swipe(user.id),
          {:ok, target_uid} <- fetch_string(attrs, "target_uid"),
@@ -154,6 +157,7 @@ defmodule BluetteServer.Accounts do
 
   def cancel_upcoming_meeting(%User{} = user) do
     mark_due_meetings_for_user(user.id)
+    mark_happening_meetings_for_user(user.id)
 
     case upcoming_meeting_for(user.id) do
       nil ->
@@ -655,21 +659,38 @@ defmodule BluetteServer.Accounts do
 
   defp mark_due_meetings_for_user(user_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
+    grace_seconds = @due_meeting_grace_hours * 3600
+    cutoff = DateTime.add(now, -grace_seconds, :second)
 
     from(m in Meeting,
       where:
-        m.status == "upcoming" and m.scheduled_for <= ^now and
+        m.status in ["upcoming", "happening"] and m.scheduled_for <= ^cutoff and
           (m.user_a_id == ^user_id or m.user_b_id == ^user_id)
     )
     |> Repo.update_all(set: [status: "due", updated_at: now])
   end
 
-  defp upcoming_meeting_for(user_id) do
+  defp mark_happening_meetings_for_user(user_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
+    grace_seconds = @due_meeting_grace_hours * 3600
+    cutoff = DateTime.add(now, -grace_seconds, :second)
 
     from(m in Meeting,
       where:
-        m.status == "upcoming" and m.scheduled_for > ^now and
+        m.status == "upcoming" and m.scheduled_for <= ^now and m.scheduled_for > ^cutoff and
+          (m.user_a_id == ^user_id or m.user_b_id == ^user_id)
+    )
+    |> Repo.update_all(set: [status: "happening", updated_at: now])
+  end
+
+  defp upcoming_meeting_for(user_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    grace_seconds = @due_meeting_grace_hours * 3600
+    cutoff = DateTime.add(now, -grace_seconds, :second)
+
+    from(m in Meeting,
+      where:
+        m.status in ["upcoming", "happening"] and m.scheduled_for > ^cutoff and
           (m.user_a_id == ^user_id or m.user_b_id == ^user_id),
       order_by: [asc: m.scheduled_for],
       limit: 1
