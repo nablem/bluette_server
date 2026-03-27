@@ -26,7 +26,8 @@ defmodule BluetteServer.MixProject do
       {:jason, "~> 1.4"},
       {:plug_cowboy, "~> 2.7"},
       {:ecto_sql, "~> 3.12"},
-      {:ecto_sqlite3, "~> 0.18"}
+      {:ecto_sqlite3, "~> 0.18"},
+      {:jose, "~> 1.11"}
     ]
   end
 

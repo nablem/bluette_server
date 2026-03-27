@@ -97,6 +97,78 @@ Examples:
 - mock:user_1:user1@example.com
 - mock:nabil:nabil@example.com
 
+Environment auth verifier setup:
+
+- dev/test: `BluetteServer.Auth.MockVerifier`
+- prod: `BluetteServer.Auth.FirebaseVerifier`
+
+When `BluetteServer.Auth.FirebaseVerifier` is active, `firebase_project_id` must be configured.
+
+## Test Firebase Auth From Flutter
+
+Use this flow when the mobile app is connected to your backend.
+
+1. In Firebase Console, add your Flutter app and enable Google Sign-In.
+2. Start backend with Firebase verifier and project id configured.
+3. In Flutter, sign in with Firebase Auth, fetch the ID token, and call `/api/v1/auth/verify` with `Authorization: Bearer <id_token>`.
+4. Verify backend response is `200` with `authenticated: true` and a `user.uid` matching Firebase `uid`.
+
+Expected backend request:
+
+- Method: `POST`
+- URL: `http://<your-backend-host>:4000/api/v1/auth/verify`
+- Headers:
+  - `Authorization: Bearer <firebase_id_token>`
+
+Expected success response shape:
+
+- `authenticated: true`
+- `user.uid` = Firebase uid
+- `user.email` = Firebase email
+
+Expected failure cases:
+
+- Missing/invalid bearer token -> `401`
+- Expired token -> `401`
+- Wrong Firebase project token (`aud` mismatch) -> `401`
+
+Minimal Flutter call example:
+
+```dart
+import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
+
+Future<void> verifyWithBackend() async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) throw Exception('No signed-in user');
+
+  final idToken = await user.getIdToken(true);
+  final uri = Uri.parse('http://10.0.2.2:4000/api/v1/auth/verify');
+
+  final response = await http.post(
+    uri,
+    headers: {
+      'Authorization': 'Bearer $idToken',
+      'Content-Type': 'application/json',
+    },
+  );
+
+  if (response.statusCode != 200) {
+    throw Exception('Backend auth failed: ${response.statusCode} ${response.body}');
+  }
+
+  final body = jsonDecode(response.body) as Map<String, dynamic>;
+  if (body['authenticated'] != true) {
+    throw Exception('Unexpected backend auth response: $body');
+  }
+}
+```
+
+Android emulator note:
+
+- Use `10.0.2.2` instead of `localhost` to reach backend running on your machine.
+
 ## Tests
 
 Run tests at each iteration:

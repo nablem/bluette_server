@@ -5,11 +5,26 @@ defmodule BluetteServer.Application do
 
   @impl true
   def start(_type, _args) do
+    validate_auth_config!()
+
     children =
       [BluetteServer.Repo]
       |> maybe_add_http_server()
 
     Supervisor.start_link(children, strategy: :one_for_one, name: BluetteServer.Supervisor)
+  end
+
+  defp validate_auth_config! do
+    auth_verifier =
+      Application.get_env(:bluette_server, :auth_verifier, BluetteServer.Auth.MockVerifier)
+
+    if auth_verifier == BluetteServer.Auth.FirebaseVerifier do
+      project_id = Application.get_env(:bluette_server, :firebase_project_id)
+
+      if not (is_binary(project_id) and project_id != "") do
+        raise "firebase_project_id is required when using BluetteServer.Auth.FirebaseVerifier"
+      end
+    end
   end
 
   defp port do

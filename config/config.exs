@@ -1,8 +1,7 @@
 import Config
 
 config :bluette_server,
-  port: 4000,
-  auth_verifier: BluetteServer.Auth.MockVerifier
+  port: 4000
 
 config :bluette_server,
   ecto_repos: [BluetteServer.Repo]
