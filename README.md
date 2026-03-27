@@ -14,10 +14,11 @@ Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
 6. [Data Model](#data-model)
 7. [API Reference](#api-reference)
 8. [Error Codes](#error-codes)
-9. [Auth](#auth)
-10. [Local Setup](#local-setup)
-11. [Development Utilities](#development-utilities)
-12. [Tests](#tests)
+9. [Realtime Events](#realtime-events)
+10. [Auth](#auth)
+11. [Local Setup](#local-setup)
+12. [Development Utilities](#development-utilities)
+13. [Tests](#tests)
 
 ---
 
@@ -31,6 +32,7 @@ Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
 - Meeting lock: swiping disabled while a meeting is active.
 - Cancellation with `visibility_rank` penalty.
 - Bars catalog import from JSON with weekday open-hours checking.
+- Notifications persistence and realtime stream via SSE.
 
 ---
 
@@ -414,6 +416,81 @@ The cancelled party's home will also return `stack` mode on their next poll.
 
 ---
 
+### `GET /api/v1/notifications`
+
+Returns latest notifications for the authenticated user.
+
+Query params:
+
+- `limit` (optional, default `50`, max `200`)
+- `after_id` (optional, only notification IDs greater than this value)
+
+**Response `200`:**
+```json
+{
+  "notifications": [
+    {
+      "id": 12,
+      "event_type": "meeting_happening",
+      "payload": {
+        "meeting_id": 3,
+        "meeting_status": "happening",
+        "scheduled_for": "2026-03-28T17:00:00Z",
+        "counterparty_uid": "seeded_user_17",
+        "place": {
+          "name": "Bar 8",
+          "latitude": 48.8669,
+          "longitude": 2.3271
+        }
+      },
+      "read_at": null,
+      "inserted_at": "2026-03-28T17:00:01Z"
+    }
+  ],
+  "unread_count": 1
+}
+```
+
+---
+
+### `POST /api/v1/notifications/read`
+
+Marks notifications as read.
+
+Body variants:
+
+- `{}` marks all unread notifications as read
+- `{ "ids": [12, 15] }` marks only selected notifications as read
+
+**Response `200`:**
+```json
+{ "updated": 2, "unread_count": 0 }
+```
+
+---
+
+### `GET /api/v1/notifications/stream`
+
+Server-Sent Events (SSE) stream for real-time updates.
+
+Headers:
+
+- `Authorization: Bearer <token>`
+- `Accept: text/event-stream`
+
+Event names:
+
+- `connected`
+- `notification`
+
+SSE event example:
+```text
+event: notification
+data: {"id":12,"event_type":"match_created","payload":{...},"read_at":null,"inserted_at":"2026-03-28T17:00:01Z"}
+```
+
+---
+
 ## Error Codes
 
 | HTTP | `error` value | Meaning |
@@ -427,6 +504,23 @@ The cancelled party's home will also return `stack` mode on their next poll.
 | `409` | `target_not_found` | `target_uid` does not exist |
 | `409` | `cannot_swipe_self` | `target_uid` matches the caller |
 | `422` | `validation_failed` | Request body missing or invalid fields |
+
+---
+
+## Realtime Events
+
+Current event types persisted and streamed to users:
+
+- `match_created`: emitted for both users when reciprocal likes create a meeting.
+- `meeting_happening`: emitted for both users when scheduled time is reached and meeting enters grace window.
+- `meeting_due`: emitted for both users when `scheduled_for + 12h` is reached.
+- `meeting_cancelled`: emitted for both users when either user cancels; payload includes `cancelled_by_uid`.
+
+Recommended client behavior:
+
+1. Open `GET /api/v1/notifications/stream` right after successful auth.
+2. On each `notification`, update local notification state and optionally call `GET /api/v1/home` to refresh home mode.
+3. Call `POST /api/v1/notifications/read` after user consumes notifications.
 
 ---
 
@@ -520,5 +614,5 @@ BluetteServer.Accounts.clear_user_details("user_1")
 mix test
 ```
 
-49 tests, covering: auth verifiers, profile settings, onboarding, stack filtering, swipe decisions, match creation, meeting lifecycle (upcoming → happening → due), cancellation, visibility rank, edge cases (pass with reciprocal like, swipe during happening meeting, cancel with no meeting, other party's view after cancel).
+54 tests, covering: auth verifiers, profile settings, onboarding, stack filtering, swipe decisions, match creation, meeting lifecycle (upcoming → happening → due), cancellation, visibility rank, realtime notifications persistence, and edge cases (pass with reciprocal like, swipe during happening meeting, cancel with no meeting, other party's view after cancel).
 

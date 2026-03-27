@@ -6,6 +6,7 @@ defmodule BluetteServer.Accounts do
   alias BluetteServer.Accounts.Meeting
   alias BluetteServer.Accounts.Swipe
   alias BluetteServer.Accounts.User
+  alias BluetteServer.Notifications
   alias BluetteServer.Repo
 
   @profile_picture_url "https://dessindigo.com/storage/images/posts/bob-eponge/dessin-bob-eponge.webp"
@@ -171,6 +172,12 @@ defmodule BluetteServer.Accounts do
             |> Repo.update()
 
           _ = lower_visibility_rank(user)
+          _ =
+            Notifications.notify_meeting_event(
+              cancelled_meeting,
+              "meeting_cancelled",
+              %{cancelled_by_uid: user.firebase_uid}
+            )
 
           cancelled_meeting
         end)
@@ -532,7 +539,10 @@ defmodule BluetteServer.Accounts do
     |> Meeting.create_changeset(attrs)
     |> Repo.insert()
     |> case do
-      {:ok, meeting} -> {:ok, meeting}
+      {:ok, meeting} ->
+        _ = Notifications.notify_meeting_event(meeting, "match_created")
+        {:ok, meeting}
+
       _ -> :no_match
     end
   end
@@ -662,12 +672,27 @@ defmodule BluetteServer.Accounts do
     grace_seconds = @due_meeting_grace_hours * 3600
     cutoff = DateTime.add(now, -grace_seconds, :second)
 
-    from(m in Meeting,
-      where:
-        m.status in ["upcoming", "happening"] and m.scheduled_for <= ^cutoff and
-          (m.user_a_id == ^user_id or m.user_b_id == ^user_id)
-    )
-    |> Repo.update_all(set: [status: "due", updated_at: now])
+    meetings =
+      from(m in Meeting,
+        where:
+          m.status in ["upcoming", "happening"] and m.scheduled_for <= ^cutoff and
+            (m.user_a_id == ^user_id or m.user_b_id == ^user_id)
+      )
+      |> Repo.all()
+
+    meeting_ids = Enum.map(meetings, & &1.id)
+
+    if meeting_ids != [] do
+      from(m in Meeting,
+        where: m.id in ^meeting_ids
+      )
+      |> Repo.update_all(set: [status: "due", updated_at: now])
+
+      Enum.each(meetings, fn meeting ->
+        due_meeting = %{meeting | status: "due", updated_at: now}
+        _ = Notifications.notify_meeting_event(due_meeting, "meeting_due")
+      end)
+    end
   end
 
   defp mark_happening_meetings_for_user(user_id) do
@@ -675,12 +700,27 @@ defmodule BluetteServer.Accounts do
     grace_seconds = @due_meeting_grace_hours * 3600
     cutoff = DateTime.add(now, -grace_seconds, :second)
 
-    from(m in Meeting,
-      where:
-        m.status == "upcoming" and m.scheduled_for <= ^now and m.scheduled_for > ^cutoff and
-          (m.user_a_id == ^user_id or m.user_b_id == ^user_id)
-    )
-    |> Repo.update_all(set: [status: "happening", updated_at: now])
+    meetings =
+      from(m in Meeting,
+        where:
+          m.status == "upcoming" and m.scheduled_for <= ^now and m.scheduled_for > ^cutoff and
+            (m.user_a_id == ^user_id or m.user_b_id == ^user_id)
+      )
+      |> Repo.all()
+
+    meeting_ids = Enum.map(meetings, & &1.id)
+
+    if meeting_ids != [] do
+      from(m in Meeting,
+        where: m.id in ^meeting_ids
+      )
+      |> Repo.update_all(set: [status: "happening", updated_at: now])
+
+      Enum.each(meetings, fn meeting ->
+        happening_meeting = %{meeting | status: "happening", updated_at: now}
+        _ = Notifications.notify_meeting_event(happening_meeting, "meeting_happening")
+      end)
+    end
   end
 
   defp upcoming_meeting_for(user_id) do

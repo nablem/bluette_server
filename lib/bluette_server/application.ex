@@ -8,7 +8,10 @@ defmodule BluetteServer.Application do
     validate_auth_config!()
 
     children =
-      [BluetteServer.Repo]
+      [
+        BluetteServer.Repo,
+        {Registry, keys: :duplicate, name: BluetteServer.Notifications.Registry}
+      ]
       |> maybe_add_http_server()
 
     Supervisor.start_link(children, strategy: :one_for_one, name: BluetteServer.Supervisor)

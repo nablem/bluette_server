@@ -2,6 +2,8 @@ defmodule BluetteServer.Router do
   use Plug.Router
 
   alias BluetteServer.Accounts
+  alias BluetteServer.Notifications
+  alias BluetteServer.Notifications.Stream
 
   plug Plug.Logger
   plug :match
@@ -185,6 +187,45 @@ defmodule BluetteServer.Router do
     end)
   end
 
+  get "/api/v1/notifications" do
+    with_authenticated_user(conn, fn conn, user ->
+      limit = parse_integer(conn.query_params["limit"])
+      after_id = parse_integer(conn.query_params["after_id"])
+
+      notifications =
+        Notifications.list_user_notifications(user.id,
+          limit: limit || 50,
+          after_id: after_id
+        )
+
+      send_json(conn, 200, %{notifications: notifications, unread_count: Notifications.unread_count(user.id)})
+    end)
+  end
+
+  post "/api/v1/notifications/read" do
+    with_authenticated_user(conn, fn conn, user ->
+      ids = conn.body_params["ids"]
+
+      updated =
+        case ids do
+          list when is_list(list) ->
+            parsed_ids = Enum.map(list, &parse_integer/1) |> Enum.filter(&is_integer/1)
+            Notifications.mark_as_read(user.id, parsed_ids)
+
+          _ ->
+            Notifications.mark_as_read(user.id, :all)
+        end
+
+      send_json(conn, 200, %{updated: updated, unread_count: Notifications.unread_count(user.id)})
+    end)
+  end
+
+  get "/api/v1/notifications/stream" do
+    with_authenticated_user(conn, fn conn, user ->
+      Stream.stream(conn, user.id)
+    end)
+  end
+
   get "/api/v1/home" do
     with_authenticated_user(conn, fn conn, user ->
       payload =
@@ -247,4 +288,15 @@ defmodule BluetteServer.Router do
     |> Plug.Conn.put_resp_content_type("application/json")
     |> Plug.Conn.send_resp(status, body)
   end
+
+  defp parse_integer(value) when is_integer(value), do: value
+
+  defp parse_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} -> int
+      _ -> nil
+    end
+  end
+
+  defp parse_integer(_value), do: nil
 end
