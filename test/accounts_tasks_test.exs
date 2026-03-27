@@ -60,7 +60,8 @@ defmodule BluetteServer.AccountsTasksTest do
   end
 
   test "import_bars_from_json imports bars from project root file" do
-    assert {:ok, count} = Accounts.import_bars_from_json("bars_Paris_1st_arrondissement.json")
+    assert File.exists?("bars.json")
+    assert {:ok, count} = Accounts.import_bars_from_json("bars.json")
     assert count > 0
     assert Accounts.count_bars() > 0
   end

@@ -485,7 +485,7 @@ mix bluette.seed_fake_profiles 50
 
 ```sh
 mix bluette.import_bars
-mix bluette.import_bars bars_Paris_1st_arrondissement.json
+mix bluette.import_bars bars.json
 ```
 
 ### IEx helpers
