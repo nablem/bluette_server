@@ -20,10 +20,18 @@ defmodule BluetteServer.AccountsTasksTest do
 
     assert Enum.all?(seeded_users, fn user ->
              user.age in 18..120 and
+               user.gender in ["male", "female", "other"] and
                user.profile_picture ==
                  "https://dessindigo.com/storage/images/posts/bob-eponge/dessin-bob-eponge.webp" and
                user.audio_bio ==
                  "https://upload.wikimedia.org/wikipedia/commons/1/1f/Fundaci%C3%B3n_Joaqu%C3%ADn_D%C3%ADaz_-_ATO_00446_13_-_Rosario_de_Las_quince_rosas_de_Mar%C3%ADa.ogg" and
+               user.latitude == 48.867178137901746 and
+               user.longitude == 2.2688445113445654 and
+               user.pref_min_age in 18..40 and
+               user.pref_max_age in 23..120 and
+               user.pref_max_age >= user.pref_min_age and
+               user.pref_max_distance_km in [5, 10, 25, 50, 100] and
+               user.pref_gender in ["male", "female", "everyone"] and
                not is_nil(user.name)
            end)
   end

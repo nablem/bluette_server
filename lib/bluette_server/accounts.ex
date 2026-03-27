@@ -7,6 +7,11 @@ defmodule BluetteServer.Accounts do
 
   @profile_picture_url "https://dessindigo.com/storage/images/posts/bob-eponge/dessin-bob-eponge.webp"
   @audio_bio_url "https://upload.wikimedia.org/wikipedia/commons/1/1f/Fundaci%C3%B3n_Joaqu%C3%ADn_D%C3%ADaz_-_ATO_00446_13_-_Rosario_de_Las_quince_rosas_de_Mar%C3%ADa.ogg"
+  @seed_latitude 48.867178137901746
+  @seed_longitude 2.2688445113445654
+  @seed_genders ["male", "female", "other"]
+  @seed_preferred_genders ["male", "female", "everyone"]
+  @seed_max_distance_km [5, 10, 25, 50, 100]
   @first_names [
     "Alice",
     "Amine",
@@ -135,13 +140,24 @@ defmodule BluetteServer.Accounts do
 
     entries =
       Enum.map(1..count, fn index ->
+        min_age = 18 + rem(index * 3, 23)
+
         %{
           firebase_uid: "seeded_user_#{index}",
           email: "seeded_user_#{index}@bluette.local",
           name: random_name(),
           age: Enum.random(18..120),
+          gender: Enum.at(@seed_genders, rem(index - 1, length(@seed_genders))),
           profile_picture: @profile_picture_url,
           audio_bio: @audio_bio_url,
+          latitude: @seed_latitude,
+          longitude: @seed_longitude,
+          pref_min_age: min_age,
+          pref_max_age: min(120, min_age + 5 + rem(index * 5, 20)),
+          pref_max_distance_km:
+            Enum.at(@seed_max_distance_km, rem(index - 1, length(@seed_max_distance_km))),
+          pref_gender:
+            Enum.at(@seed_preferred_genders, rem(index - 1, length(@seed_preferred_genders))),
           inserted_at: inserted_at,
           updated_at: inserted_at
         }
@@ -149,7 +165,23 @@ defmodule BluetteServer.Accounts do
 
     {count, _rows} =
       Repo.insert_all(User, entries,
-        on_conflict: {:replace, [:email, :name, :age, :profile_picture, :audio_bio, :updated_at]},
+        on_conflict:
+          {:replace,
+           [
+             :email,
+             :name,
+             :age,
+             :gender,
+             :profile_picture,
+             :audio_bio,
+             :latitude,
+             :longitude,
+             :pref_min_age,
+             :pref_max_age,
+             :pref_max_distance_km,
+             :pref_gender,
+             :updated_at
+           ]},
         conflict_target: [:firebase_uid]
       )
 
