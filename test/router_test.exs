@@ -34,6 +34,9 @@ defmodule BluetteServer.RouterTest do
                "age" => nil,
                "audio_bio" => nil,
                "email" => "user1@example.com",
+               "gender" => nil,
+               "latitude" => nil,
+               "longitude" => nil,
                "name" => nil,
                "profile_picture" => nil,
                "uid" => "user_1"
@@ -74,6 +77,9 @@ defmodule BluetteServer.RouterTest do
                "age" => nil,
                "audio_bio" => nil,
                "email" => "user2@example.com",
+               "gender" => nil,
+               "latitude" => nil,
+               "longitude" => nil,
                "name" => "Nabil",
                "profile_picture" => nil,
                "uid" => "user_2"
@@ -158,7 +164,17 @@ defmodule BluetteServer.RouterTest do
              "home" => %{},
              "onboarding" => %{
                "completed" => false,
-               "missing_fields" => ["name", "age", "audio_bio", "profile_picture"]
+               "missing_fields" => [
+                 "name",
+                 "age",
+                 "gender",
+                 "audio_bio",
+                 "profile_picture",
+                 "pref_min_age",
+                 "pref_max_age",
+                 "pref_max_distance_km",
+                 "pref_gender"
+               ]
              }
            }
   end
@@ -181,6 +197,12 @@ defmodule BluetteServer.RouterTest do
       |> put_req_header("authorization", "Bearer mock:user_6:user6@example.com")
       |> Router.call([])
 
+    _gender =
+      conn(:put, "/api/v1/profile/gender", Jason.encode!(%{"gender" => "female"}))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer mock:user_6:user6@example.com")
+      |> Router.call([])
+
     _audio =
       conn(:put, "/api/v1/profile/audio-bio", Jason.encode!(%{"audio_bio" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/audio6.m4a"}))
       |> put_req_header("content-type", "application/json")
@@ -189,6 +211,12 @@ defmodule BluetteServer.RouterTest do
 
     _picture =
       conn(:put, "/api/v1/profile/profile-picture", Jason.encode!(%{"profile_picture" => "https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie6.jpg"}))
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer mock:user_6:user6@example.com")
+      |> Router.call([])
+
+    _prefs =
+      conn(:put, "/api/v1/profile/matching-preferences", Jason.encode!(%{"min_age" => 20, "max_age" => 40, "max_distance_km" => 50, "preferred_gender" => "everyone"}))
       |> put_req_header("content-type", "application/json")
       |> put_req_header("authorization", "Bearer mock:user_6:user6@example.com")
       |> Router.call([])

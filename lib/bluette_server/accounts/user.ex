@@ -7,8 +7,15 @@ defmodule BluetteServer.Accounts.User do
     field :email, :string
     field :name, :string
     field :age, :integer
+    field :gender, :string
     field :audio_bio, :string
     field :profile_picture, :string
+    field :latitude, :float
+    field :longitude, :float
+    field :pref_min_age, :integer
+    field :pref_max_age, :integer
+    field :pref_max_distance_km, :integer
+    field :pref_gender, :string
 
     timestamps(type: :utc_datetime)
   end
@@ -50,9 +57,51 @@ defmodule BluetteServer.Accounts.User do
     |> validate_url(:profile_picture)
   end
 
+  def gender_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:gender])
+    |> validate_required([:gender])
+    |> validate_inclusion(:gender, ["male", "female", "other"],
+      message: "must be male, female, or other"
+    )
+  end
+
+  def location_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:latitude, :longitude])
+    |> validate_required([:latitude, :longitude])
+    |> validate_number(:latitude, greater_than_or_equal_to: -90, less_than_or_equal_to: 90)
+    |> validate_number(:longitude, greater_than_or_equal_to: -180, less_than_or_equal_to: 180)
+  end
+
+  def matching_preferences_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:pref_min_age, :pref_max_age, :pref_max_distance_km, :pref_gender])
+    |> validate_required([:pref_min_age, :pref_max_age, :pref_max_distance_km, :pref_gender])
+    |> validate_number(:pref_min_age, greater_than_or_equal_to: 18, less_than_or_equal_to: 120)
+    |> validate_number(:pref_max_age, greater_than_or_equal_to: 18, less_than_or_equal_to: 120)
+    |> validate_number(:pref_max_distance_km, greater_than: 0)
+    |> validate_inclusion(:pref_gender, ["male", "female", "everyone"],
+      message: "must be male, female, or everyone"
+    )
+    |> validate_age_range()
+  end
+
   def onboarding_completed?(%__MODULE__{} = user) do
-    required = [user.name, user.age, user.audio_bio, user.profile_picture]
-    Enum.all?(required, &(not is_nil(&1) and &1 != ""))
+    profile = [user.name, user.age, user.gender, user.audio_bio, user.profile_picture]
+    prefs = [user.pref_min_age, user.pref_max_age, user.pref_max_distance_km, user.pref_gender]
+    Enum.all?(profile ++ prefs, &(not is_nil(&1) and &1 != ""))
+  end
+
+  defp validate_age_range(changeset) do
+    min = get_field(changeset, :pref_min_age)
+    max = get_field(changeset, :pref_max_age)
+
+    if min && max && min > max do
+      add_error(changeset, :pref_max_age, "must be greater than or equal to min_age")
+    else
+      changeset
+    end
   end
 
   defp validate_url(changeset, field) do

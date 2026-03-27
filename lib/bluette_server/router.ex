@@ -74,6 +74,79 @@ defmodule BluetteServer.Router do
     end)
   end
 
+  delete "/api/v1/profile" do
+    with_authenticated_user(conn, fn conn, user ->
+      case Accounts.delete_user(user) do
+        {:ok, _} ->
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.send_resp(204, "")
+
+        {:error, reason} ->
+          send_json(conn, 500, %{error: to_string(reason)})
+      end
+    end)
+  end
+
+  put "/api/v1/profile/gender" do
+    with_authenticated_user(conn, fn conn, user ->
+      attrs = %{"gender" => conn.body_params["gender"]}
+
+      case Accounts.update_gender(user, attrs) do
+        {:ok, updated_user} ->
+          send_json(conn, 200, %{user: Accounts.user_response(updated_user)})
+
+        {:error, changeset} ->
+          send_json(conn, 422, %{error: "validation_failed", details: Accounts.errors_on(changeset)})
+      end
+    end)
+  end
+
+  put "/api/v1/profile/location" do
+    with_authenticated_user(conn, fn conn, user ->
+      attrs = %{
+        "latitude" => conn.body_params["latitude"],
+        "longitude" => conn.body_params["longitude"]
+      }
+
+      case Accounts.update_location(user, attrs) do
+        {:ok, updated_user} ->
+          send_json(conn, 200, %{user: Accounts.user_response(updated_user)})
+
+        {:error, changeset} ->
+          send_json(conn, 422, %{error: "validation_failed", details: Accounts.errors_on(changeset)})
+      end
+    end)
+  end
+
+  get "/api/v1/profile" do
+    with_authenticated_user(conn, fn conn, user ->
+      send_json(conn, 200, %{
+        user: Accounts.user_response(user),
+        preferences: Accounts.preferences_response(user)
+      })
+    end)
+  end
+
+  put "/api/v1/profile/matching-preferences" do
+    with_authenticated_user(conn, fn conn, user ->
+      attrs = %{
+        "pref_min_age" => conn.body_params["min_age"],
+        "pref_max_age" => conn.body_params["max_age"],
+        "pref_max_distance_km" => conn.body_params["max_distance_km"],
+        "pref_gender" => conn.body_params["preferred_gender"]
+      }
+
+      case Accounts.update_matching_preferences(user, attrs) do
+        {:ok, updated_user} ->
+          send_json(conn, 200, %{preferences: Accounts.preferences_response(updated_user)})
+
+        {:error, changeset} ->
+          send_json(conn, 422, %{error: "validation_failed", details: Accounts.errors_on(changeset)})
+      end
+    end)
+  end
+
   get "/api/v1/home" do
     with_authenticated_user(conn, fn conn, user ->
       payload =

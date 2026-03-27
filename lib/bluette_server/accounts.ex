@@ -77,14 +77,48 @@ defmodule BluetteServer.Accounts do
     %{completed: User.onboarding_completed?(user), missing_fields: missing_fields(user)}
   end
 
+  def update_gender(%User{} = user, attrs) do
+    user
+    |> User.gender_changeset(attrs)
+    |> Repo.update()
+  end
+
+  def update_location(%User{} = user, attrs) do
+    user
+    |> User.location_changeset(attrs)
+    |> Repo.update()
+  end
+
+  def update_matching_preferences(%User{} = user, attrs) do
+    user
+    |> User.matching_preferences_changeset(attrs)
+    |> Repo.update()
+  end
+
+  def delete_user(%User{} = user) do
+    Repo.delete(user)
+  end
+
   def user_response(%User{} = user) do
     %{
       uid: user.firebase_uid,
       email: user.email,
       name: user.name,
       age: user.age,
+      gender: user.gender,
       audio_bio: user.audio_bio,
-      profile_picture: user.profile_picture
+      profile_picture: user.profile_picture,
+      latitude: user.latitude,
+      longitude: user.longitude
+    }
+  end
+
+  def preferences_response(%User{} = user) do
+    %{
+      min_age: user.pref_min_age,
+      max_age: user.pref_max_age,
+      max_distance_km: user.pref_max_distance_km,
+      preferred_gender: user.pref_gender
     }
   end
 
@@ -159,8 +193,13 @@ defmodule BluetteServer.Accounts do
     []
     |> maybe_add_missing(user.name, "name")
     |> maybe_add_missing(user.age, "age")
+    |> maybe_add_missing(user.gender, "gender")
     |> maybe_add_missing(user.audio_bio, "audio_bio")
     |> maybe_add_missing(user.profile_picture, "profile_picture")
+    |> maybe_add_missing(user.pref_min_age, "pref_min_age")
+    |> maybe_add_missing(user.pref_max_age, "pref_max_age")
+    |> maybe_add_missing(user.pref_max_distance_km, "pref_max_distance_km")
+    |> maybe_add_missing(user.pref_gender, "pref_gender")
   end
 
   defp maybe_add_missing(acc, nil, field), do: acc ++ [field]
