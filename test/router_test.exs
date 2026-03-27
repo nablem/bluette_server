@@ -161,7 +161,11 @@ defmodule BluetteServer.RouterTest do
 
     assert response.status == 200
     assert Jason.decode!(response.resp_body) == %{
-             "home" => %{},
+             "home" => %{
+               "mode" => "stack",
+               "can_swipe" => true,
+               "profile" => nil
+             },
              "onboarding" => %{
                "completed" => false,
                "missing_fields" => [
@@ -227,7 +231,13 @@ defmodule BluetteServer.RouterTest do
       |> Router.call([])
 
     assert response.status == 200
-    assert Jason.decode!(response.resp_body) == %{"home" => %{}}
+    assert Jason.decode!(response.resp_body) == %{
+             "home" => %{
+               "mode" => "stack",
+               "can_swipe" => true,
+               "profile" => nil
+             }
+           }
   end
 
   defp authed_json_conn(method, path, payload) do

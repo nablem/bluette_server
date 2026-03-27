@@ -1,204 +1,147 @@
 # Bluette Server
 
-Backend API for the Bluette mobile app.
+Backend API for the Bluette mobile app (Elixir, Plug/Cowboy, Ecto).
 
-This repository currently contains Iteration 2:
+## Current Feature Scope
 
-- Local HTTP server (Plug + Cowboy)
-- SQLite database via Ecto
-- Auth login/verify endpoint with user upsert
-- Field-based profile detail endpoints
-- Home endpoint placeholder
-- ExUnit coverage for onboarding behavior
+- Firebase-based authentication boundary (mock in dev/test, real verifier in prod).
+- Profile and settings management.
+- Onboarding completeness tracking.
+- Homepage swipe stack.
+- Mutual-like meeting creation.
+- Meeting lock behavior: while a meeting is upcoming, swiping is disabled.
+- Meeting cancellation with visibility-rank penalty.
+- Fake profile seeding for local development.
 
-## Run Locally
+## Core Homepage Product Logic
 
-1. Install dependencies:
+1. Users see a stack of profiles one by one.
+2. Each profile can be swiped with `like` or `pass`.
+3. A mutual `like` creates a meeting instantly.
+4. While a meeting is upcoming, homepage shows meeting details and swiping is blocked.
+5. Stack returns only when meeting is cancelled (or once due logic is handled in a later iteration).
+6. Cancelling a meeting lowers the canceller's `visibility_rank`.
+7. Profiles with an upcoming meeting are hidden from everyone else's stack.
 
-  mix deps.get
+## Data Model Overview
 
-2. Start server:
+### `users`
 
-  mix run --no-halt
+- Auth identity: `firebase_uid`, `email`.
+- Profile: `name`, `age`, `gender`, `audio_bio`, `profile_picture`.
+- Location: `latitude`, `longitude`.
+- Preferences: `pref_min_age`, `pref_max_age`, `pref_max_distance_km`, `pref_gender`.
+- Ranking: `visibility_rank` (lowered on meeting cancellation).
 
-3. API base URL:
+### `swipes`
 
-  http://localhost:4000
+- `swiper_user_id`, `swiped_user_id`, `decision` (`like` or `pass`).
+- Unique pair index prevents duplicate rows for the same directed pair.
+- Re-swiping updates the existing decision.
 
-## Postman Checks
+### `meetings`
 
-Health check:
+- `user_a_id`, `user_b_id`.
+- `status` (`upcoming` or `cancelled`).
+- `scheduled_for` (currently generated between next day and 72h, evening slot).
+- `place_name`, `place_latitude`, `place_longitude`.
+- `cancelled_by_user_id`.
 
-- Method: GET
-- URL: http://localhost:4000/health
+Note: closest-bar selection from imported Google Maps CSV is intentionally deferred; current place is a placeholder plus midpoint coordinates when both users have location.
 
-Auth verify/login (creates user if missing):
+## API Endpoints
 
-- Method: POST
-- URL: http://localhost:4000/api/v1/auth/verify
-- Header: Authorization = Bearer mock:user_1:user1@example.com
+### Health
 
-Update name:
+- `GET /health`
 
-- Method: PUT
-- URL: http://localhost:4000/api/v1/profile/name
-- Header: Authorization = Bearer mock:user_1:user1@example.com
-- Body (JSON): {"name":"Nabil"}
+### Auth
 
-Update age:
+- `POST /api/v1/auth/verify`
+  - Uses bearer token claims to upsert/fetch user.
 
-- Method: PUT
-- URL: http://localhost:4000/api/v1/profile/age
-- Header: Authorization = Bearer mock:user_1:user1@example.com
-- Body (JSON): {"age":27}
-- Rule: age must be between 18 and 120 (inclusive)
+### Profile / Settings
 
-Update audio bio:
+- `GET /api/v1/profile`
+- `PUT /api/v1/profile/name`
+- `PUT /api/v1/profile/age`
+- `PUT /api/v1/profile/gender`
+- `PUT /api/v1/profile/audio-bio`
+- `PUT /api/v1/profile/profile-picture`
+- `PUT /api/v1/profile/location`
+- `PUT /api/v1/profile/matching-preferences`
+- `DELETE /api/v1/profile`
 
-- Method: PUT
-- URL: http://localhost:4000/api/v1/profile/audio-bio
-- Header: Authorization = Bearer mock:user_1:user1@example.com
-- Body (JSON): {"audio_bio":"https://firebasestorage.googleapis.com/v0/b/bluette/o/audio1.m4a"}
-- Rule: must be a valid http/https URL (Firebase Storage URL)
+### Homepage / Matching
 
-Update profile picture:
+- `GET /api/v1/home`
+  - Returns `home.mode = "stack"` with next profile, or `home.mode = "meeting"` with upcoming meeting.
+  - Adds onboarding payload when profile is incomplete.
+- `POST /api/v1/home/swipe`
+  - Body: `{ "target_uid": "...", "decision": "like" | "pass" }`
+  - On mutual like: creates meeting and returns `match_created: true`.
+- `POST /api/v1/home/meeting/cancel`
+  - Cancels current upcoming meeting and restores stack mode.
 
-- Method: PUT
-- URL: http://localhost:4000/api/v1/profile/profile-picture
-- Header: Authorization = Bearer mock:user_1:user1@example.com
-- Body (JSON): {"profile_picture":"https://firebasestorage.googleapis.com/v0/b/bluette/o/selfie1.jpg"}
-- Rule: must be a valid http/https URL (Firebase Storage URL)
-
-Home (empty payload for now):
-
-- Method: GET
-- URL: http://localhost:4000/api/v1/home
-- Header: Authorization = Bearer mock:user_1:user1@example.com
-
-Home response behavior:
-
-- Returns {"home":{}} when onboarding is complete
-- Returns {"home":{},"onboarding":...} only when fields are still missing
-
-Unauthorized example:
-
-- Method: POST
-- URL: http://localhost:4000/api/v1/auth/verify
-- No Authorization header
-
-## Token Format (Current Mock)
-
-For local development, the mock verifier accepts:
-
-mock:<uid>:<email>
-
-Examples:
-
-- mock:user_1:user1@example.com
-- mock:nabil:nabil@example.com
-
-Environment auth verifier setup:
+## Auth Verifier by Environment
 
 - dev/test: `BluetteServer.Auth.MockVerifier`
 - prod: `BluetteServer.Auth.FirebaseVerifier`
 
-When `BluetteServer.Auth.FirebaseVerifier` is active, `firebase_project_id` must be configured.
+When Firebase verifier is active, `firebase_project_id` must be configured.
+Application startup fails fast if it is missing.
 
-## Test Firebase Auth From Flutter
+## Local Setup
 
-Use this flow when the mobile app is connected to your backend.
+1. Install dependencies:
 
-1. In Firebase Console, add your Flutter app and enable Google Sign-In.
-2. Start backend with Firebase verifier and project id configured.
-3. In Flutter, sign in with Firebase Auth, fetch the ID token, and call `/api/v1/auth/verify` with `Authorization: Bearer <id_token>`.
-4. Verify backend response is `200` with `authenticated: true` and a `user.uid` matching Firebase `uid`.
+   mix deps.get
 
-Expected backend request:
+2. Run migrations:
 
-- Method: `POST`
-- URL: `http://<your-backend-host>:4000/api/v1/auth/verify`
-- Headers:
-  - `Authorization: Bearer <firebase_id_token>`
+   mix ecto.migrate
 
-Expected success response shape:
+3. Start server:
 
-- `authenticated: true`
-- `user.uid` = Firebase uid
-- `user.email` = Firebase email
+   mix run --no-halt
 
-Expected failure cases:
+4. Base URL:
 
-- Missing/invalid bearer token -> `401`
-- Expired token -> `401`
-- Wrong Firebase project token (`aud` mismatch) -> `401`
+   http://localhost:4000
 
-Minimal Flutter call example:
+## Mock Token Format (dev/test)
 
-```dart
-import 'dart:convert';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:http/http.dart' as http;
+`mock:<uid>:<email>`
 
-Future<void> verifyWithBackend() async {
-  final user = FirebaseAuth.instance.currentUser;
-  if (user == null) throw Exception('No signed-in user');
+Examples:
 
-  final idToken = await user.getIdToken(true);
-  final uri = Uri.parse('http://10.0.2.2:4000/api/v1/auth/verify');
+- `mock:user_1:user1@example.com`
+- `mock:nabil:nabil@example.com`
 
-  final response = await http.post(
-    uri,
-    headers: {
-      'Authorization': 'Bearer $idToken',
-      'Content-Type': 'application/json',
-    },
-  );
+## Firebase Mobile Test Flow
 
-  if (response.statusCode != 200) {
-    throw Exception('Backend auth failed: ${response.statusCode} ${response.body}');
-  }
+1. Enable Google sign-in in Firebase.
+2. Sign in from Flutter using Firebase Auth.
+3. Send Firebase ID token as bearer token to `POST /api/v1/auth/verify`.
+4. Expect `200` with `authenticated: true` and matching `uid/email`.
+5. Use the same bearer token on protected endpoints.
 
-  final body = jsonDecode(response.body) as Map<String, dynamic>;
-  if (body['authenticated'] != true) {
-    throw Exception('Unexpected backend auth response: $body');
-  }
-}
-```
-
-Android emulator note:
-
-- Use `10.0.2.2` instead of `localhost` to reach backend running on your machine.
-
-## Tests
-
-Run tests at each iteration:
-
-mix test
+Android emulator note: use `10.0.2.2` instead of `localhost`.
 
 ## Development Utilities
 
-Seed 30 fake completed profiles:
+Seed fake completed profiles:
 
-mix bluette.seed_fake_profiles
+- `mix bluette.seed_fake_profiles`
+- `mix bluette.seed_fake_profiles 50`
 
-Seed a custom number of fake completed profiles:
+Clear onboarding details via iex:
 
-mix bluette.seed_fake_profiles 50
+- `BluetteServer.Accounts.clear_user_details("user_1")`
 
-Clear onboarding details for the mock bearer user via iex:
+## Tests
 
-iex> BluetteServer.Accounts.clear_user_details("user_1")
-{:ok, %BluetteServer.Accounts.User{...}}
+Run full suite:
 
-Clear onboarding details for a specific user by Firebase uid via iex:
-
-iex> BluetteServer.Accounts.clear_user_details("user_42")
-{:ok, %BluetteServer.Accounts.User{...}}
-
-Current suite covers:
-
-- Mock token parsing
-- Auth login with user upsert
-- Field-based profile detail validation and update path
-- Home placeholder endpoint response
+`mix test`
 

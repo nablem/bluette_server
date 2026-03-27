@@ -147,10 +147,48 @@ defmodule BluetteServer.Router do
     end)
   end
 
+  post "/api/v1/home/swipe" do
+    with_authenticated_user(conn, fn conn, user ->
+      attrs = %{
+        "target_uid" => conn.body_params["target_uid"],
+        "decision" => conn.body_params["decision"]
+      }
+
+      case Accounts.swipe_profile(user, attrs) do
+        {:ok, swipe_result} ->
+          send_json(conn, 200, %{swipe: swipe_result, home: Accounts.home_payload(user)})
+
+        {:error, :validation_failed} ->
+          send_json(conn, 422, %{error: "validation_failed", details: %{target_uid: ["is required"]}})
+
+        {:error, :invalid_swipe_decision} ->
+          send_json(conn, 422, %{error: "validation_failed", details: %{decision: ["must be like or pass"]}})
+
+        {:error, reason} ->
+          send_json(conn, 409, %{error: to_string(reason)})
+      end
+    end)
+  end
+
+  post "/api/v1/home/meeting/cancel" do
+    with_authenticated_user(conn, fn conn, user ->
+      case Accounts.cancel_upcoming_meeting(user) do
+        {:ok, meeting} ->
+          send_json(conn, 200, %{meeting: %{status: meeting.status}, home: Accounts.home_payload(user)})
+
+        {:error, :no_upcoming_meeting} ->
+          send_json(conn, 404, %{error: "no_upcoming_meeting"})
+
+        {:error, reason} ->
+          send_json(conn, 409, %{error: to_string(reason)})
+      end
+    end)
+  end
+
   get "/api/v1/home" do
     with_authenticated_user(conn, fn conn, user ->
       payload =
-        %{home: %{}}
+        %{home: Accounts.home_payload(user)}
         |> maybe_put_missing_onboarding(user)
 
       send_json(conn, 200, payload)

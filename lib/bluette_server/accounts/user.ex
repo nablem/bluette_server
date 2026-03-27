@@ -16,13 +16,14 @@ defmodule BluetteServer.Accounts.User do
     field :pref_max_age, :integer
     field :pref_max_distance_km, :integer
     field :pref_gender, :string
+    field :visibility_rank, :integer
 
     timestamps(type: :utc_datetime)
   end
 
   def auth_changeset(user, attrs) do
     user
-    |> cast(attrs, [:firebase_uid, :email])
+    |> cast(attrs, [:firebase_uid, :email, :visibility_rank])
     |> validate_required([:firebase_uid, :email])
     |> unique_constraint(:firebase_uid)
   end
