@@ -5,12 +5,16 @@ defmodule BluetteServer.HomeMatchingTest do
   import Plug.Test
 
   alias BluetteServer.Accounts.User
+  alias BluetteServer.Accounts.Bar
+  alias BluetteServer.Accounts.Meeting
   alias BluetteServer.Repo
   alias BluetteServer.Router
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+    Repo.delete_all(Meeting)
     Repo.delete_all(User)
+    Repo.delete_all(Bar)
 
     :ok
   end
@@ -29,7 +33,25 @@ defmodule BluetteServer.HomeMatchingTest do
     assert body["home"]["profile"]["uid"] == "user_b"
   end
 
+  test "GET /api/v1/home excludes already-swiped profiles from stack" do
+    create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
+    create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
+
+    _ =
+      authed_json(:post, "/api/v1/home/swipe", %{"target_uid" => "user_b", "decision" => "like"}, "user_a", "a@example.com")
+
+    response = authed(:get, "/api/v1/home", "user_a", "a@example.com")
+
+    assert response.status == 200
+    body = Jason.decode!(response.resp_body)
+
+    assert body["home"]["mode"] == "stack"
+    assert body["home"]["profile"] == nil
+  end
+
   test "POST /api/v1/home/swipe creates a meeting on reciprocal likes" do
+    insert_all_day_open_bar("test_open_bar", "Open Test Bar", 48.8671, 2.2688)
+
     create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
     create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
 
@@ -49,6 +71,7 @@ defmodule BluetteServer.HomeMatchingTest do
     assert body["home"]["mode"] == "meeting"
     assert body["home"]["can_swipe"] == false
     assert body["home"]["meeting"]["with_user"]["uid"] == "user_a"
+    assert body["home"]["meeting"]["place"]["name"] == "Open Test Bar"
   end
 
   test "POST /api/v1/home/meeting/cancel cancels meeting and restores stack mode" do
@@ -72,6 +95,8 @@ defmodule BluetteServer.HomeMatchingTest do
   end
 
   test "POST /api/v1/home/swipe rejects swipes while meeting is upcoming" do
+    insert_all_day_open_bar("test_open_bar_2", "Open Test Bar 2", 48.8671, 2.2688)
+
     create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
     create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
 
@@ -86,6 +111,65 @@ defmodule BluetteServer.HomeMatchingTest do
 
     assert blocked_swipe.status == 409
     assert Jason.decode!(blocked_swipe.resp_body)["error"] == "meeting_in_progress"
+  end
+
+  test "GET /api/v1/home marks past meeting as due and returns stack mode" do
+    create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
+    create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
+
+    user_a = Repo.get_by!(User, firebase_uid: "user_a")
+    user_b = Repo.get_by!(User, firebase_uid: "user_b")
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    {:ok, meeting} =
+      %Meeting{}
+      |> Meeting.create_changeset(%{
+        user_a_id: user_a.id,
+        user_b_id: user_b.id,
+        status: "upcoming",
+        scheduled_for: DateTime.add(now, -3600, :second),
+        place_name: "Past Meeting Place",
+        place_latitude: 48.86,
+        place_longitude: 2.34
+      })
+      |> Repo.insert()
+
+    response = authed(:get, "/api/v1/home", "user_a", "a@example.com")
+    assert response.status == 200
+
+    body = Jason.decode!(response.resp_body)
+    assert body["home"]["mode"] == "stack"
+    assert body["home"]["can_swipe"] == true
+
+    refreshed = Repo.get!(Meeting, meeting.id)
+    assert refreshed.status == "due"
+  end
+
+  defp insert_all_day_open_bar(google_place_id, name, latitude, longitude) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    availability =
+      for day <- ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+          into: %{} do
+        {day, %{"start" => "00:00", "end" => "23:59"}}
+      end
+
+    Repo.insert_all(Bar, [
+      %{
+        google_place_id: google_place_id,
+        name: name,
+        address: "1 Rue Test",
+        locality: "Paris",
+        region_code: "FR",
+        latitude: latitude,
+        longitude: longitude,
+        availability: availability,
+        google_maps_uri: "https://maps.google.com/",
+        timezone: "Europe/Paris",
+        inserted_at: now,
+        updated_at: now
+      }
+    ])
   end
 
   defp create_completed_user(uid, email, gender, age, pref_gender) do

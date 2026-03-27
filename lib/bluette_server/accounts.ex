@@ -2,6 +2,7 @@ defmodule BluetteServer.Accounts do
   import Ecto.Changeset
   import Ecto.Query
 
+  alias BluetteServer.Accounts.Bar
   alias BluetteServer.Accounts.Meeting
   alias BluetteServer.Accounts.Swipe
   alias BluetteServer.Accounts.User
@@ -12,11 +13,13 @@ defmodule BluetteServer.Accounts do
   @seed_latitude 48.867178137901746
   @seed_longitude 2.2688445113445654
   @seed_genders ["male", "female", "other"]
-  @seed_preferred_genders ["male", "female", "everyone"]
+  @seed_preferred_genders ["female", "male", "everyone", "male", "female"]
   @seed_max_distance_km [5, 10, 25, 50, 100]
   @default_visibility_rank 100
   @meeting_cancellation_penalty 20
   @meeting_placeholder_place "closest_bar_pending_import"
+  @paris_timezone "Europe/Paris"
+  @weekdays ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
   @first_names [
     "Alice",
     "Amine",
@@ -114,6 +117,8 @@ defmodule BluetteServer.Accounts do
   end
 
   def home_payload(%User{} = user) do
+    mark_due_meetings_for_user(user.id)
+
     case upcoming_meeting_for(user.id) do
       nil ->
         %{
@@ -132,6 +137,8 @@ defmodule BluetteServer.Accounts do
   end
 
   def swipe_profile(%User{} = user, attrs) when is_map(attrs) do
+    mark_due_meetings_for_user(user.id)
+
     with :ok <- ensure_user_can_swipe(user.id),
          {:ok, target_uid} <- fetch_string(attrs, "target_uid"),
          {:ok, decision} <- fetch_decision(attrs),
@@ -146,6 +153,8 @@ defmodule BluetteServer.Accounts do
   end
 
   def cancel_upcoming_meeting(%User{} = user) do
+    mark_due_meetings_for_user(user.id)
+
     case upcoming_meeting_for(user.id) do
       nil ->
         {:error, :no_upcoming_meeting}
@@ -207,7 +216,7 @@ defmodule BluetteServer.Accounts do
           firebase_uid: "seeded_user_#{index}",
           email: "seeded_user_#{index}@bluette.local",
           name: random_name(),
-          age: Enum.random(18..120),
+          age: Enum.random(20..38),
           gender: Enum.at(@seed_genders, rem(index - 1, length(@seed_genders))),
           profile_picture: @profile_picture_url,
           audio_bio: @audio_bio_url,
@@ -218,7 +227,7 @@ defmodule BluetteServer.Accounts do
           pref_max_distance_km:
             Enum.at(@seed_max_distance_km, rem(index - 1, length(@seed_max_distance_km))),
           pref_gender:
-            Enum.at(@seed_preferred_genders, rem(index - 1, length(@seed_preferred_genders))),
+            Enum.at(@seed_preferred_genders, rem(index, length(@seed_preferred_genders))),
           visibility_rank: @default_visibility_rank,
           inserted_at: inserted_at,
           updated_at: inserted_at
@@ -267,6 +276,57 @@ defmodule BluetteServer.Accounts do
     Repo.aggregate(User, :count)
   end
 
+  def count_bars do
+    Repo.aggregate(Bar, :count)
+  end
+
+  def import_bars_from_json(path) when is_binary(path) do
+    with {:ok, content} <- File.read(path),
+         {:ok, decoded} <- Jason.decode(content),
+         true <- is_list(decoded) do
+      import_bars(decoded)
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :invalid_json}
+    end
+  end
+
+  def import_bars(rows) when is_list(rows) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    entries =
+      rows
+      |> Enum.map(&normalize_bar_row(&1, now))
+      |> Enum.reject(&is_nil/1)
+
+    case entries do
+      [] ->
+        {:error, :no_valid_rows}
+
+      _ ->
+        {count, _rows} =
+          Repo.insert_all(Bar, entries,
+            on_conflict:
+              {:replace,
+               [
+                 :name,
+                 :address,
+                 :locality,
+                 :region_code,
+                 :latitude,
+                 :longitude,
+                 :availability,
+                 :google_maps_uri,
+                 :timezone,
+                 :updated_at
+               ]},
+            conflict_target: [:google_place_id]
+          )
+
+        {:ok, count}
+    end
+  end
+
   def get_user_by_uid(firebase_uid) when is_binary(firebase_uid) do
     Repo.get_by(User, firebase_uid: firebase_uid)
   end
@@ -284,6 +344,35 @@ defmodule BluetteServer.Accounts do
       nil -> {:error, :not_found}
     end
   end
+
+  defp normalize_bar_row(row, now) when is_map(row) do
+    google_place_id = Map.get(row, "google_place_id")
+    name = Map.get(row, "name")
+
+    if is_binary(google_place_id) and google_place_id != "" and is_binary(name) and name != "" do
+      %{
+        google_place_id: google_place_id,
+        name: name,
+        address: Map.get(row, "address"),
+        locality: Map.get(row, "locality"),
+        region_code: Map.get(row, "regionCode"),
+        latitude: number_or_nil(Map.get(row, "latitude")),
+        longitude: number_or_nil(Map.get(row, "longitude")),
+        availability: Map.get(row, "availability") || %{},
+        google_maps_uri: Map.get(row, "google_maps_uri"),
+        timezone: Map.get(row, "timezone") || @paris_timezone,
+        inserted_at: now,
+        updated_at: now
+      }
+    else
+      nil
+    end
+  end
+
+  defp normalize_bar_row(_row, _now), do: nil
+
+  defp number_or_nil(value) when is_number(value), do: value
+  defp number_or_nil(_value), do: nil
 
   defp update_email_if_changed(%User{email: email} = user, email), do: {:ok, user}
 
@@ -412,14 +501,25 @@ defmodule BluetteServer.Accounts do
   end
 
   defp create_meeting(%User{} = user_a, %User{} = user_b) do
-    {place_latitude, place_longitude} = midpoint(user_a, user_b)
+    {mid_latitude, mid_longitude} = midpoint(user_a, user_b)
+    {scheduled_for, selected_bar} = schedule_and_select_bar(mid_latitude, mid_longitude)
+
+    place_name =
+      if selected_bar do
+        selected_bar.name
+      else
+        @meeting_placeholder_place
+      end
+
+    place_latitude = if selected_bar, do: selected_bar.latitude, else: mid_latitude
+    place_longitude = if selected_bar, do: selected_bar.longitude, else: mid_longitude
 
     attrs = %{
       user_a_id: user_a.id,
       user_b_id: user_b.id,
       status: "upcoming",
-      scheduled_for: next_evening_slot(),
-      place_name: @meeting_placeholder_place,
+      scheduled_for: scheduled_for,
+      place_name: place_name,
       place_latitude: place_latitude,
       place_longitude: place_longitude
     }
@@ -442,14 +542,126 @@ defmodule BluetteServer.Accounts do
     end
   end
 
-  defp next_evening_slot do
-    day_offset = Enum.random(1..3)
-    hour = Enum.random(18..21)
+  defp schedule_and_select_bar(mid_latitude, mid_longitude) do
+    bars_count = Repo.aggregate(Bar, :count)
 
-    date = Date.utc_today() |> Date.add(day_offset)
-    naive = NaiveDateTime.new!(date, Time.new!(hour, 0, 0))
+    if bars_count == 0 do
+      {next_evening_slot_fallback(), nil}
+    else
+      slots = candidate_slots()
 
-    DateTime.from_naive!(naive, "Etc/UTC")
+      Enum.find_value(slots, fn slot ->
+        case nearest_open_bar(mid_latitude, mid_longitude, slot) do
+          nil -> nil
+          bar -> {slot, bar}
+        end
+      end) || {next_evening_slot_fallback(), nil}
+    end
+  end
+
+  defp candidate_slots do
+    paris_now = DateTime.now!(@paris_timezone)
+
+    for day_offset <- 1..3,
+        hour <- 18..21 do
+      date = Date.add(DateTime.to_date(paris_now), day_offset)
+      naive = NaiveDateTime.new!(date, Time.new!(hour, 0, 0))
+
+      naive
+      |> DateTime.from_naive!(@paris_timezone)
+      |> DateTime.shift_zone!("Etc/UTC")
+      |> DateTime.truncate(:second)
+    end
+  end
+
+  defp nearest_open_bar(mid_latitude, mid_longitude, scheduled_for_utc) do
+    bars = Repo.all(Bar)
+
+    bars
+    |> Enum.filter(&bar_open_at?(&1, scheduled_for_utc))
+    |> Enum.sort_by(&distance_to_midpoint(&1, mid_latitude, mid_longitude))
+    |> List.first()
+  end
+
+  defp distance_to_midpoint(%Bar{} = bar, mid_latitude, mid_longitude) do
+    if is_number(mid_latitude) and is_number(mid_longitude) and is_number(bar.latitude) and
+         is_number(bar.longitude) do
+      haversine_km(mid_latitude, mid_longitude, bar.latitude, bar.longitude)
+    else
+      0.0
+    end
+  end
+
+  defp bar_open_at?(%Bar{} = bar, scheduled_for_utc) do
+    timezone = bar.timezone || @paris_timezone
+    local_dt = DateTime.shift_zone!(scheduled_for_utc, timezone)
+    weekday = weekday_name(local_dt)
+
+    case get_in(bar.availability || %{}, [weekday]) do
+      %{"start" => start_time, "end" => end_time} ->
+        within_opening_hours?(local_dt, start_time, end_time)
+
+      _ ->
+        false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp weekday_name(%DateTime{} = dt) do
+    Enum.at(@weekdays, Date.day_of_week(DateTime.to_date(dt)) - 1)
+  end
+
+  defp within_opening_hours?(local_dt, start_time, end_time)
+       when is_binary(start_time) and is_binary(end_time) do
+    with {:ok, start_minutes} <- parse_minutes(start_time),
+         {:ok, end_minutes} <- parse_minutes(end_time) do
+      meeting_minutes = local_dt.hour * 60 + local_dt.minute
+      meeting_minutes >= start_minutes and meeting_minutes <= end_minutes
+    else
+      _ -> false
+    end
+  end
+
+  defp within_opening_hours?(_local_dt, _start_time, _end_time), do: false
+
+  defp parse_minutes(value) do
+    case String.split(value, ":") do
+      [h, m] ->
+        with {hour, ""} <- Integer.parse(h),
+             {minute, ""} <- Integer.parse(m),
+             true <- hour in 0..23,
+             true <- minute in 0..59 do
+          {:ok, hour * 60 + minute}
+        else
+          _ -> {:error, :invalid_time}
+        end
+
+      _ ->
+        {:error, :invalid_time}
+    end
+  end
+
+  defp next_evening_slot_fallback do
+    paris_now = DateTime.now!(@paris_timezone)
+    date = Date.add(DateTime.to_date(paris_now), 1)
+    naive = NaiveDateTime.new!(date, ~T[19:00:00])
+
+    naive
+    |> DateTime.from_naive!(@paris_timezone)
+    |> DateTime.shift_zone!("Etc/UTC")
+    |> DateTime.truncate(:second)
+  end
+
+  defp mark_due_meetings_for_user(user_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    from(m in Meeting,
+      where:
+        m.status == "upcoming" and m.scheduled_for <= ^now and
+          (m.user_a_id == ^user_id or m.user_b_id == ^user_id)
+    )
+    |> Repo.update_all(set: [status: "due", updated_at: now])
   end
 
   defp upcoming_meeting_for(user_id) do

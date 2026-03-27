@@ -2,12 +2,14 @@ defmodule BluetteServer.AccountsTasksTest do
   use ExUnit.Case, async: false
 
   alias BluetteServer.Accounts
+  alias BluetteServer.Accounts.Bar
   alias BluetteServer.Accounts.User
   alias BluetteServer.Repo
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
     Repo.delete_all(User)
+    Repo.delete_all(Bar)
     :ok
   end
 
@@ -55,5 +57,18 @@ defmodule BluetteServer.AccountsTasksTest do
     Mix.Tasks.Bluette.SeedFakeProfiles.run(["5"])
 
     assert Accounts.count_users() == 5
+  end
+
+  test "import_bars_from_json imports bars from project root file" do
+    assert {:ok, count} = Accounts.import_bars_from_json("bars_Paris_1st_arrondissement.json")
+    assert count > 0
+    assert Accounts.count_bars() > 0
+  end
+
+  test "mix bluette.import_bars imports bars from default json file" do
+    Mix.Task.reenable("bluette.import_bars")
+    Mix.Tasks.Bluette.ImportBars.run([])
+
+    assert Accounts.count_bars() > 0
   end
 end

@@ -29,7 +29,9 @@ defmodule BluetteServer.Accounts.Meeting do
       :cancelled_by_user_id
     ])
     |> validate_required([:user_a_id, :user_b_id, :status, :scheduled_for, :place_name])
-    |> validate_inclusion(:status, ["upcoming", "cancelled"], message: "must be upcoming or cancelled")
+    |> validate_inclusion(:status, ["upcoming", "due", "cancelled"],
+      message: "must be upcoming, due, or cancelled"
+    )
     |> validate_different_users()
   end
 
@@ -37,7 +39,7 @@ defmodule BluetteServer.Accounts.Meeting do
     meeting
     |> cast(%{status: "cancelled", cancelled_by_user_id: cancelled_by_user_id}, [:status, :cancelled_by_user_id])
     |> validate_required([:status])
-    |> validate_inclusion(:status, ["upcoming", "cancelled"])
+    |> validate_inclusion(:status, ["upcoming", "due", "cancelled"])
   end
 
   defp validate_different_users(changeset) do

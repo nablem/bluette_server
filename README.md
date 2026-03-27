@@ -11,6 +11,8 @@ Backend API for the Bluette mobile app (Elixir, Plug/Cowboy, Ecto).
 - Mutual-like meeting creation.
 - Meeting lock behavior: while a meeting is upcoming, swiping is disabled.
 - Meeting cancellation with visibility-rank penalty.
+- Automatic due-meeting transition (when scheduled time passes, stack returns).
+- Bars catalog import from JSON and nearest-open-bar selection for meetings.
 - Fake profile seeding for local development.
 
 ## Core Homepage Product Logic
@@ -19,9 +21,10 @@ Backend API for the Bluette mobile app (Elixir, Plug/Cowboy, Ecto).
 2. Each profile can be swiped with `like` or `pass`.
 3. A mutual `like` creates a meeting instantly.
 4. While a meeting is upcoming, homepage shows meeting details and swiping is blocked.
-5. Stack returns only when meeting is cancelled (or once due logic is handled in a later iteration).
+5. Stack returns when meeting is cancelled or when scheduled time is reached (meeting becomes `due`).
 6. Cancelling a meeting lowers the canceller's `visibility_rank`.
 7. Profiles with an upcoming meeting are hidden from everyone else's stack.
+8. Meeting place is the nearest bar that is open at the selected meeting slot (Paris timezone).
 
 ## Data Model Overview
 
@@ -42,12 +45,17 @@ Backend API for the Bluette mobile app (Elixir, Plug/Cowboy, Ecto).
 ### `meetings`
 
 - `user_a_id`, `user_b_id`.
-- `status` (`upcoming` or `cancelled`).
-- `scheduled_for` (currently generated between next day and 72h, evening slot).
+- `status` (`upcoming`, `due`, or `cancelled`).
+- `scheduled_for` (between next day and 72h, evening slot, Paris timezone).
 - `place_name`, `place_latitude`, `place_longitude`.
 - `cancelled_by_user_id`.
 
-Note: closest-bar selection from imported Google Maps CSV is intentionally deferred; current place is a placeholder plus midpoint coordinates when both users have location.
+### `bars`
+
+- `google_place_id`, `name`, `address`, `locality`, `region_code`.
+- `latitude`, `longitude`.
+- `availability` (weekday opening windows).
+- `google_maps_uri`, `timezone`.
 
 ## API Endpoints
 
@@ -82,6 +90,12 @@ Note: closest-bar selection from imported Google Maps CSV is intentionally defer
   - On mutual like: creates meeting and returns `match_created: true`.
 - `POST /api/v1/home/meeting/cancel`
   - Cancels current upcoming meeting and restores stack mode.
+
+Meeting scheduling details:
+
+- Schedules in evening slots over next day to 72h (Paris timezone).
+- Chooses nearest bar that is open at that exact slot.
+- Falls back to placeholder place only if bars catalog is empty.
 
 ## Auth Verifier by Environment
 
@@ -134,6 +148,11 @@ Seed fake completed profiles:
 
 - `mix bluette.seed_fake_profiles`
 - `mix bluette.seed_fake_profiles 50`
+
+Import bars catalog JSON (default root file or custom path):
+
+- `mix bluette.import_bars`
+- `mix bluette.import_bars bars_Paris_1st_arrondissement.json`
 
 Clear onboarding details via iex:
 
