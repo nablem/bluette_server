@@ -31,6 +31,7 @@ Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
 - Mutual-like meeting creation with nearest open bar selection.
 - Meeting status lifecycle: `upcoming` → `happening` → `due` / `cancelled`.
 - Due meeting survey gate before returning to stack mode.
+- Silent `visibility_rank` penalty for users who ignore due surveys for 48 hours.
 - Meeting lock: swiping disabled while a meeting is active.
 - Cancellation with `visibility_rank` penalty.
 - Bars catalog import from JSON with weekday open-hours checking.
@@ -49,9 +50,10 @@ Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
   - Both `true`: both users gain `+5` visibility rank.
   - Both `false`: both users lose `-5` visibility rank.
   - Mixed answers: no rank change.
-7. Cancelling a meeting lowers the canceller's `visibility_rank` by 20 (floor 0).
-8. Profiles that have an active meeting (`upcoming` or `happening`) are hidden from everyone else's stack.
-9. A `pass` decision never creates a meeting, even if the other party already liked.
+7. If a user still has not answered 48 hours after the meeting became `due`, that user silently loses `10` visibility points once for that meeting.
+8. Cancelling a meeting lowers the canceller's `visibility_rank` by 20 (floor 0).
+9. Profiles that have an active meeting (`upcoming` or `happening`) are hidden from everyone else's stack.
+10. A `pass` decision never creates a meeting, even if the other party already liked.
 
 ---
 
@@ -102,6 +104,7 @@ Candidates are ordered by `visibility_rank` descending, then by `id` ascending.
 - Cancelling a meeting: `−20` (floor `0`).
 - Due survey result `both_yes`: `+5` for both users.
 - Due survey result `both_no`: `−5` for both users.
+- Unanswered due survey after 48 more hours: `−10` for that user only, applied once per meeting.
 - Higher rank = shown earlier in others' stacks.
 - Reset is manual (no automatic recovery is implemented).
 
@@ -734,5 +737,5 @@ BluetteServer.Accounts.clear_user_details("user_1")
 mix test
 ```
 
-66 tests, covering: auth verifiers, profile settings, onboarding, stack filtering, swipe decisions, match creation, meeting lifecycle (upcoming → happening → due), due survey gating and scoring, cancellation, visibility rank, realtime notifications persistence, concurrency safety for survey submissions, and edge cases (pass with reciprocal like, swipe during happening meeting, cancel with no meeting, other party's view after cancel).
+72 tests, covering: auth verifiers, profile settings, onboarding, stack filtering, swipe decisions, match creation, meeting lifecycle (upcoming → happening → due), due survey gating and scoring, overdue survey penalties, cancellation, visibility rank, realtime notifications persistence, concurrency safety for survey submissions, and edge cases (pass with reciprocal like, swipe during happening meeting, cancel with no meeting, other party's view after cancel).
 

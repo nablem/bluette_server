@@ -20,7 +20,9 @@ defmodule BluetteServer.Accounts do
   @default_visibility_rank 100
   @meeting_cancellation_penalty 20
   @meeting_survey_rank_delta 5
+  @meeting_survey_overdue_penalty 10
   @due_meeting_grace_hours 12
+  @meeting_survey_reply_deadline_hours 48
   @meeting_placeholder_place "closest_bar_pending_import"
   @paris_timezone "Europe/Paris"
   @weekdays ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -121,8 +123,7 @@ defmodule BluetteServer.Accounts do
   end
 
   def home_payload(%User{} = user) do
-    mark_due_meetings_for_user(user.id)
-    mark_happening_meetings_for_user(user.id)
+    refresh_meeting_state_for_user(user.id)
 
     case upcoming_meeting_for(user.id) do
       nil ->
@@ -152,8 +153,7 @@ defmodule BluetteServer.Accounts do
   end
 
   def submit_meeting_survey(%User{} = user, attrs) when is_map(attrs) do
-    mark_due_meetings_for_user(user.id)
-    mark_happening_meetings_for_user(user.id)
+    refresh_meeting_state_for_user(user.id)
 
     with {:ok, attended} <- fetch_attended(attrs),
          %Meeting{} = meeting <- pending_due_survey_for(user.id) do
@@ -186,8 +186,7 @@ defmodule BluetteServer.Accounts do
   end
 
   def swipe_profile(%User{} = user, attrs) when is_map(attrs) do
-    mark_due_meetings_for_user(user.id)
-    mark_happening_meetings_for_user(user.id)
+    refresh_meeting_state_for_user(user.id)
 
     with :ok <- ensure_user_can_swipe(user.id),
          {:ok, target_uid} <- fetch_string(attrs, "target_uid"),
@@ -203,8 +202,7 @@ defmodule BluetteServer.Accounts do
   end
 
   def cancel_upcoming_meeting(%User{} = user) do
-    mark_due_meetings_for_user(user.id)
-    mark_happening_meetings_for_user(user.id)
+    refresh_meeting_state_for_user(user.id)
 
     case upcoming_meeting_for(user.id) do
       nil ->
@@ -773,6 +771,39 @@ defmodule BluetteServer.Accounts do
     end
   end
 
+  defp refresh_meeting_state_for_user(user_id) do
+    mark_due_meetings_for_user(user_id)
+    mark_happening_meetings_for_user(user_id)
+    apply_overdue_survey_penalties_for_user(user_id)
+  end
+
+  defp apply_overdue_survey_penalties_for_user(user_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    cutoff_seconds = (@due_meeting_grace_hours + @meeting_survey_reply_deadline_hours) * 3600
+    cutoff = DateTime.add(now, -cutoff_seconds, :second)
+
+    meetings =
+      from(m in Meeting,
+        left_join: survey in MeetingSurvey,
+        on: survey.meeting_id == m.id and survey.user_id == ^user_id,
+        where:
+          m.status == "due" and is_nil(survey.id) and m.scheduled_for <= ^cutoff and
+            (m.user_a_id == ^user_id or m.user_b_id == ^user_id),
+        where:
+          (m.user_a_id == ^user_id and is_nil(m.user_a_survey_overdue_penalized_at)) or
+            (m.user_b_id == ^user_id and is_nil(m.user_b_survey_overdue_penalized_at))
+      )
+      |> Repo.all()
+
+    Enum.each(meetings, fn meeting ->
+      updated_count = mark_survey_overdue_penalized(meeting, user_id, now)
+
+      if updated_count == 1 do
+        _ = adjust_visibility_rank(user_id, -@meeting_survey_overdue_penalty)
+      end
+    end)
+  end
+
   defp upcoming_meeting_for(user_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     grace_seconds = @due_meeting_grace_hours * 3600
@@ -799,6 +830,22 @@ defmodule BluetteServer.Accounts do
       limit: 1
     )
     |> Repo.one()
+  end
+
+  defp mark_survey_overdue_penalized(%Meeting{user_a_id: user_id} = meeting, user_id, now) do
+    from(m in Meeting,
+      where: m.id == ^meeting.id and is_nil(m.user_a_survey_overdue_penalized_at)
+    )
+    |> Repo.update_all(set: [user_a_survey_overdue_penalized_at: now, updated_at: now])
+    |> elem(0)
+  end
+
+  defp mark_survey_overdue_penalized(%Meeting{user_b_id: user_id} = meeting, user_id, now) do
+    from(m in Meeting,
+      where: m.id == ^meeting.id and is_nil(m.user_b_survey_overdue_penalized_at)
+    )
+    |> Repo.update_all(set: [user_b_survey_overdue_penalized_at: now, updated_at: now])
+    |> elem(0)
   end
 
   defp next_profile_for(%User{} = user) do

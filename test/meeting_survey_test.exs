@@ -60,6 +60,107 @@ defmodule BluetteServer.MeetingSurveyTest do
     assert body["home"]["can_swipe"] == true
   end
 
+  test "overdue unanswered due survey silently applies minus 10 once" do
+    create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
+    create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
+
+    _meeting = create_due_meeting_at("user_a", "user_b", 61)
+
+    first_response = authed(:get, "/api/v1/home", "user_a", "a@example.com")
+    assert first_response.status == 200
+
+    user_a_after_first = Repo.get_by!(User, firebase_uid: "user_a")
+    assert user_a_after_first.visibility_rank == 90
+
+    second_response = authed(:get, "/api/v1/home", "user_a", "a@example.com")
+    assert second_response.status == 200
+
+    user_a_after_second = Repo.get_by!(User, firebase_uid: "user_a")
+    assert user_a_after_second.visibility_rank == 90
+  end
+
+  test "no overdue survey penalty is applied before 48 hours after due" do
+    create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
+    create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
+
+    _meeting = create_due_meeting_at("user_a", "user_b", 59)
+
+    response = authed(:get, "/api/v1/home", "user_a", "a@example.com")
+    assert response.status == 200
+
+    user_a = Repo.get_by!(User, firebase_uid: "user_a")
+    assert user_a.visibility_rank == 100
+  end
+
+  test "answered user is not penalized after overdue deadline" do
+    create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
+    create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
+
+    meeting = create_due_meeting_at("user_a", "user_b", 61)
+    insert_survey_answer(meeting.id, "user_a", true)
+
+    response = authed(:get, "/api/v1/home", "user_a", "a@example.com")
+    assert response.status == 200
+
+    user_a = Repo.get_by!(User, firebase_uid: "user_a")
+    assert user_a.visibility_rank == 100
+  end
+
+  test "only unanswered user is penalized after overdue deadline" do
+    create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
+    create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
+
+    meeting = create_due_meeting_at("user_a", "user_b", 61)
+    insert_survey_answer(meeting.id, "user_b", true)
+
+    response_a = authed(:get, "/api/v1/home", "user_a", "a@example.com")
+    response_b = authed(:get, "/api/v1/home", "user_b", "b@example.com")
+
+    assert response_a.status == 200
+    assert response_b.status == 200
+
+    user_a = Repo.get_by!(User, firebase_uid: "user_a")
+    user_b = Repo.get_by!(User, firebase_uid: "user_b")
+
+    assert user_a.visibility_rank == 90
+    assert user_b.visibility_rank == 100
+  end
+
+  test "overdue survey penalty respects visibility rank floor" do
+    create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
+    create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
+
+    user_a = Repo.get_by!(User, firebase_uid: "user_a")
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    _ =
+      Repo.update_all(
+        from(u in User, where: u.id == ^user_a.id),
+        set: [visibility_rank: 5, updated_at: now]
+      )
+
+    _meeting = create_due_meeting_at("user_a", "user_b", 61)
+
+    response = authed(:get, "/api/v1/home", "user_a", "a@example.com")
+    assert response.status == 200
+
+    user_a_after = Repo.get_by!(User, firebase_uid: "user_a")
+    assert user_a_after.visibility_rank == 0
+  end
+
+  test "cancelled meetings do not trigger overdue survey penalties" do
+    create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
+    create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
+
+    _meeting = create_cancelled_meeting_at("user_a", "user_b", 61)
+
+    response = authed(:get, "/api/v1/home", "user_a", "a@example.com")
+    assert response.status == 200
+
+    user_a = Repo.get_by!(User, firebase_uid: "user_a")
+    assert user_a.visibility_rank == 100
+  end
+
   test "POST /api/v1/home/meeting/survey returns 404 when no pending due survey exists" do
     create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
 
@@ -306,6 +407,10 @@ defmodule BluetteServer.MeetingSurveyTest do
   end
 
   defp create_due_meeting(user_a_uid, user_b_uid) do
+    create_due_meeting_at(user_a_uid, user_b_uid, 13)
+  end
+
+  defp create_due_meeting_at(user_a_uid, user_b_uid, hours_ago) do
     user_a = Repo.get_by!(User, firebase_uid: user_a_uid)
     user_b = Repo.get_by!(User, firebase_uid: user_b_uid)
     now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -316,7 +421,7 @@ defmodule BluetteServer.MeetingSurveyTest do
         user_a_id: user_a.id,
         user_b_id: user_b.id,
         status: "due",
-        scheduled_for: DateTime.add(now, -13 * 3600, :second),
+        scheduled_for: DateTime.add(now, -hours_ago * 3600, :second),
         place_name: "Past Meeting Place",
         place_latitude: 48.86,
         place_longitude: 2.34
@@ -324,6 +429,45 @@ defmodule BluetteServer.MeetingSurveyTest do
       |> Repo.insert()
 
     meeting
+  end
+
+  defp create_cancelled_meeting_at(user_a_uid, user_b_uid, hours_ago) do
+    user_a = Repo.get_by!(User, firebase_uid: user_a_uid)
+    user_b = Repo.get_by!(User, firebase_uid: user_b_uid)
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    {:ok, meeting} =
+      %Meeting{}
+      |> Meeting.create_changeset(%{
+        user_a_id: user_a.id,
+        user_b_id: user_b.id,
+        status: "cancelled",
+        scheduled_for: DateTime.add(now, -hours_ago * 3600, :second),
+        place_name: "Cancelled Meeting Place",
+        place_latitude: 48.86,
+        place_longitude: 2.34,
+        cancelled_by_user_id: user_a.id
+      })
+      |> Repo.insert()
+
+    meeting
+  end
+
+  defp insert_survey_answer(meeting_id, user_uid, attended) do
+    user = Repo.get_by!(User, firebase_uid: user_uid)
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    {:ok, _survey} =
+      %MeetingSurvey{}
+      |> MeetingSurvey.create_changeset(%{
+        meeting_id: meeting_id,
+        user_id: user.id,
+        attended: attended,
+        answered_at: now
+      })
+      |> Repo.insert()
+
+    :ok
   end
 
   defp create_completed_user(uid, email, gender, age, pref_gender) do

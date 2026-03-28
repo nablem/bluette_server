@@ -10,6 +10,8 @@ defmodule BluetteServer.Accounts.Meeting do
     field :place_longitude, :float
     field :survey_outcome, :string
     field :survey_resolved_at, :utc_datetime
+    field :user_a_survey_overdue_penalized_at, :utc_datetime
+    field :user_b_survey_overdue_penalized_at, :utc_datetime
 
     belongs_to :user_a, BluetteServer.Accounts.User
     belongs_to :user_b, BluetteServer.Accounts.User
@@ -30,6 +32,8 @@ defmodule BluetteServer.Accounts.Meeting do
       :place_longitude,
       :survey_outcome,
       :survey_resolved_at,
+      :user_a_survey_overdue_penalized_at,
+      :user_b_survey_overdue_penalized_at,
       :cancelled_by_user_id
     ])
     |> validate_required([:user_a_id, :user_b_id, :status, :scheduled_for, :place_name])
