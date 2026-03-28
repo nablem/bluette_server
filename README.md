@@ -15,10 +15,11 @@ Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
 7. [API Reference](#api-reference)
 8. [Error Codes](#error-codes)
 9. [Realtime Events](#realtime-events)
-10. [Auth](#auth)
-11. [Local Setup](#local-setup)
-12. [Development Utilities](#development-utilities)
-13. [Tests](#tests)
+10. [Frontend Flow](#frontend-flow)
+11. [Auth](#auth)
+12. [Local Setup](#local-setup)
+13. [Development Utilities](#development-utilities)
+14. [Tests](#tests)
 
 ---
 
@@ -29,6 +30,7 @@ Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
 - Homepage swipe stack with preference + distance filtering.
 - Mutual-like meeting creation with nearest open bar selection.
 - Meeting status lifecycle: `upcoming` → `happening` → `due` / `cancelled`.
+- Due meeting survey gate before returning to stack mode.
 - Meeting lock: swiping disabled while a meeting is active.
 - Cancellation with `visibility_rank` penalty.
 - Bars catalog import from JSON with weekday open-hours checking.
@@ -42,12 +44,14 @@ Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
 2. Each profile can be swiped `like` or `pass`.
 3. A mutual `like` immediately creates a meeting at the nearest open bar.
 4. While a meeting is `upcoming` or `happening`, the home screen shows meeting details and swiping is blocked.
-5. The stack returns when:
-   - The meeting is cancelled, or
-   - 12 hours have elapsed since the meeting's `scheduled_for` time (status becomes `due`).
-6. Cancelling a meeting lowers the canceller's `visibility_rank` by 20 (floor 0).
-7. Profiles that have an active meeting (`upcoming` or `happening`) are hidden from everyone else's stack.
-8. A `pass` decision never creates a meeting, even if the other party already liked.
+5. Once a meeting reaches `due`, each user must answer a survey (`attended: true/false`) before stack mode is returned.
+6. Survey scoring:
+  - Both `true`: both users gain `+5` visibility rank.
+  - Both `false`: both users lose `-5` visibility rank.
+  - Mixed answers: no rank change.
+7. Cancelling a meeting lowers the canceller's `visibility_rank` by 20 (floor 0).
+8. Profiles that have an active meeting (`upcoming` or `happening`) are hidden from everyone else's stack.
+9. A `pass` decision never creates a meeting, even if the other party already liked.
 
 ---
 
@@ -61,7 +65,7 @@ Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
      happening   ← stack still locked, 12h grace window
          │ scheduled_for + 12h reached
          ▼
-       due       ← stack unlocks
+      due       ← survey required before stack unlocks
 ```
 
 Cancellation can happen from `upcoming` or `happening`:
@@ -71,7 +75,7 @@ Cancellation can happen from `upcoming` or `happening`:
      happening ──► cancelled ← visibility_rank − 20
 ```
 
-Status transitions are applied automatically on every call to `GET /api/v1/home`, `POST /api/v1/home/swipe`, and `POST /api/v1/home/meeting/cancel`.
+Status transitions are applied automatically on every call to `GET /api/v1/home`, `POST /api/v1/home/swipe`, `POST /api/v1/home/meeting/cancel`, and `POST /api/v1/home/meeting/survey`.
 
 ---
 
@@ -96,6 +100,8 @@ Candidates are ordered by `visibility_rank` descending, then by `id` ascending.
 
 - Default: `100`.
 - Cancelling a meeting: `−20` (floor `0`).
+- Due survey result `both_yes`: `+5` for both users.
+- Due survey result `both_no`: `−5` for both users.
 - Higher rank = shown earlier in others' stacks.
 - Reset is manual (no automatic recovery is implemented).
 
@@ -144,6 +150,19 @@ Unique constraint on `(swiper_user_id, swiped_user_id)`. Re-swiping upserts the 
 | `place_latitude` | float | |
 | `place_longitude` | float | |
 | `cancelled_by_user_id` | integer | FK users, nullable |
+| `survey_outcome` | string | `both_yes`, `both_no`, `mixed` when both answers exist |
+| `survey_resolved_at` | utc_datetime | nullable, set when both answers have been processed |
+
+### `meeting_surveys`
+
+| Field | Type | Notes |
+|---|---|---|
+| `meeting_id` | integer | FK meetings |
+| `user_id` | integer | FK users |
+| `attended` | boolean | `true` or `false` |
+| `answered_at` | utc_datetime | |
+
+Unique constraint on `(meeting_id, user_id)`.
 
 ### `bars`
 
@@ -344,6 +363,27 @@ Main polling endpoint. Applies status transitions before returning. Call this wh
 
 `meeting.status` can be `"upcoming"` (future) or `"happening"` (within 12h grace window). The app can use this to differentiate UI — e.g. show a countdown banner when `"happening"`.
 
+**Survey mode** (meeting is due and current user has not answered yet):
+```json
+{
+  "home": {
+    "mode": "survey",
+    "can_swipe": false,
+    "survey": {
+      "meeting": {
+        "id": 1,
+        "status": "due",
+        "scheduled_for": "2026-03-28T17:00:00Z",
+        "place": { "name": "Bar 8", "latitude": 48.8669, "longitude": 2.3271 },
+        "with_user": { "uid": "seeded_user_17", "name": "Alice", "age": 20, "gender": "female", "audio_bio": "https://…", "profile_picture": "https://…" }
+      }
+    }
+  }
+}
+```
+
+While in `survey` mode, swiping returns `409 survey_pending` until the current user submits an answer.
+
 **With incomplete onboarding** (additional key when profile is not complete):
 ```json
 {
@@ -413,6 +453,28 @@ Cancels the current active meeting (`upcoming` or `happening`). Lowers the calle
 The cancelled party's home will also return `stack` mode on their next poll.
 
 **Response `404`:** `{ "error": "no_upcoming_meeting" }` — no active meeting to cancel.
+
+---
+
+### `POST /api/v1/home/meeting/survey`
+
+Submits whether the current user attended the most recent pending due meeting.
+
+**Body:** `{ "attended": true }`
+
+**Response `200`:**
+```json
+{
+  "home": { "mode": "stack", "can_swipe": true, "profile": { "uid": "seeded_user_2", "name": "Luna", "age": 26, "gender": "female", "audio_bio": "https://…", "profile_picture": "https://…" } }
+}
+```
+
+**Response `404`:** `{ "error": "no_due_meeting_survey" }`
+
+**Response `422`:**
+```json
+{ "error": "validation_failed", "details": { "attended": ["must be true or false"] } }
+```
 
 ---
 
@@ -499,7 +561,9 @@ data: {"id":12,"event_type":"match_created","payload":{...},"read_at":null,"inse
 | `401` | `invalid_token` | Token failed verification |
 | `404` | `not_found` | Route does not exist |
 | `404` | `no_upcoming_meeting` | Cancel attempted with no active meeting |
+| `404` | `no_due_meeting_survey` | Survey submit attempted without a pending due survey |
 | `409` | `meeting_in_progress` | Swipe blocked — caller has an active meeting |
+| `409` | `survey_pending` | Swipe blocked — caller must answer due meeting survey first |
 | `409` | `target_unavailable` | Swipe blocked — target user has an active meeting |
 | `409` | `target_not_found` | `target_uid` does not exist |
 | `409` | `cannot_swipe_self` | `target_uid` matches the caller |
@@ -514,6 +578,8 @@ Current event types persisted and streamed to users:
 - `match_created`: emitted for both users when reciprocal likes create a meeting.
 - `meeting_happening`: emitted for both users when scheduled time is reached and meeting enters grace window.
 - `meeting_due`: emitted for both users when `scheduled_for + 12h` is reached.
+- `meeting_survey_required`: emitted for both users when meeting becomes `due` and survey answers are now required.
+- `meeting_survey_resolved`: emitted for both users after both survey answers are submitted; payload includes `survey_outcome` and `rank_delta`.
 - `meeting_cancelled`: emitted for both users when either user cancels; payload includes `cancelled_by_uid`.
 
 Recommended client behavior:
@@ -521,6 +587,60 @@ Recommended client behavior:
 1. Open `GET /api/v1/notifications/stream` right after successful auth.
 2. On each `notification`, update local notification state and optionally call `GET /api/v1/home` to refresh home mode.
 3. Call `POST /api/v1/notifications/read` after user consumes notifications.
+
+---
+
+## Frontend Flow
+
+The backend is designed around `GET /api/v1/home` as canonical UI state. Use notification events as triggers and `home` payload as source of truth.
+
+### 1) Launch and Auth
+
+1. Authenticate user and call `POST /api/v1/auth/verify`.
+2. Open `GET /api/v1/notifications/stream` once authenticated.
+3. Call `GET /api/v1/home` and render based on `home.mode`.
+
+### 2) Home State Machine
+
+1. `home.mode == "stack"`: show swipe stack.
+2. `home.mode == "meeting"`: show meetup card, disable swipe actions.
+3. `home.mode == "survey"`: show yes/no due-meeting survey, disable swipe actions.
+
+### 3) Swipe and Match
+
+1. User swipes via `POST /api/v1/home/swipe`.
+2. If response has `swipe.match_created == true`, switch immediately to meeting UI from returned `home` payload.
+3. If match was created on the other device first, `match_created` notification should trigger `GET /api/v1/home` and transition to meeting UI.
+
+### 4) Meeting Lifecycle Refreshes
+
+Trigger `GET /api/v1/home` when receiving these events:
+
+1. `match_created` (meeting appears)
+2. `meeting_happening` (status UI update)
+3. `meeting_due` or `meeting_survey_required` (survey appears)
+4. `meeting_cancelled` (return to stack)
+5. `meeting_survey_resolved` (result finalized)
+
+### 5) Due Survey Flow
+
+1. When `home.mode == "survey"`, ask: "Did you meet <name>?"
+2. Submit answer with `POST /api/v1/home/meeting/survey` and `{ "attended": true | false }`.
+3. Render UI from returned `home` payload.
+4. If swipe API returns `409 survey_pending`, redirect to survey UI and refresh `GET /api/v1/home`.
+
+### 6) Reconnect and Resync
+
+1. On SSE reconnect, call `GET /api/v1/home` once.
+2. On app resume/foreground, call `GET /api/v1/home` once.
+3. Keep event handling idempotent; multiple events may map to the same current state.
+
+### 7) Minimal Error Handling
+
+1. `401`: refresh/reacquire auth token, then retry call.
+2. `404 no_due_meeting_survey`: dismiss survey UI and refresh `GET /api/v1/home`.
+3. `409 meeting_in_progress` or `409 survey_pending`: route to non-stack mode with `GET /api/v1/home`.
+4. `422 validation_failed`: keep current screen and show inline validation message.
 
 ---
 
@@ -614,5 +734,5 @@ BluetteServer.Accounts.clear_user_details("user_1")
 mix test
 ```
 
-54 tests, covering: auth verifiers, profile settings, onboarding, stack filtering, swipe decisions, match creation, meeting lifecycle (upcoming → happening → due), cancellation, visibility rank, realtime notifications persistence, and edge cases (pass with reciprocal like, swipe during happening meeting, cancel with no meeting, other party's view after cancel).
+66 tests, covering: auth verifiers, profile settings, onboarding, stack filtering, swipe decisions, match creation, meeting lifecycle (upcoming → happening → due), due survey gating and scoring, cancellation, visibility rank, realtime notifications persistence, concurrency safety for survey submissions, and edge cases (pass with reciprocal like, swipe during happening meeting, cancel with no meeting, other party's view after cancel).
 

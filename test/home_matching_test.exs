@@ -145,7 +145,7 @@ defmodule BluetteServer.HomeMatchingTest do
     assert refreshed.status == "happening"
   end
 
-  test "GET /api/v1/home marks past meeting as due and returns stack mode" do
+  test "GET /api/v1/home marks past meeting as due and returns survey mode" do
     create_completed_user("user_a", "a@example.com", "female", 27, "everyone")
     create_completed_user("user_b", "b@example.com", "male", 29, "everyone")
 
@@ -170,8 +170,9 @@ defmodule BluetteServer.HomeMatchingTest do
     assert response.status == 200
 
     body = Jason.decode!(response.resp_body)
-    assert body["home"]["mode"] == "stack"
-    assert body["home"]["can_swipe"] == true
+    assert body["home"]["mode"] == "survey"
+    assert body["home"]["can_swipe"] == false
+    assert body["home"]["survey"]["meeting"]["id"] == meeting.id
 
     refreshed = Repo.get!(Meeting, meeting.id)
     assert refreshed.status == "due"
@@ -322,8 +323,9 @@ defmodule BluetteServer.HomeMatchingTest do
     assert resp.status == 200
 
     body = Jason.decode!(resp.resp_body)
-    assert body["home"]["mode"] == "stack"
-    assert body["home"]["can_swipe"] == true
+    assert body["home"]["mode"] == "survey"
+    assert body["home"]["can_swipe"] == false
+    assert body["home"]["survey"]["meeting"]["id"] == meeting.id
 
     refreshed = Repo.get!(Meeting, meeting.id)
     assert refreshed.status == "due"

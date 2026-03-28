@@ -4,6 +4,7 @@ defmodule BluetteServer.Accounts do
 
   alias BluetteServer.Accounts.Bar
   alias BluetteServer.Accounts.Meeting
+  alias BluetteServer.Accounts.MeetingSurvey
   alias BluetteServer.Accounts.Swipe
   alias BluetteServer.Accounts.User
   alias BluetteServer.Notifications
@@ -18,6 +19,7 @@ defmodule BluetteServer.Accounts do
   @seed_max_distance_km [5, 10, 25, 50, 100]
   @default_visibility_rank 100
   @meeting_cancellation_penalty 20
+  @meeting_survey_rank_delta 5
   @due_meeting_grace_hours 12
   @meeting_placeholder_place "closest_bar_pending_import"
   @paris_timezone "Europe/Paris"
@@ -124,11 +126,21 @@ defmodule BluetteServer.Accounts do
 
     case upcoming_meeting_for(user.id) do
       nil ->
-        %{
-          mode: "stack",
-          can_swipe: true,
-          profile: next_profile_for(user) |> maybe_profile_payload()
-        }
+        case pending_due_survey_for(user.id) do
+          nil ->
+            %{
+              mode: "stack",
+              can_swipe: true,
+              profile: next_profile_for(user) |> maybe_profile_payload()
+            }
+
+          meeting ->
+            %{
+              mode: "survey",
+              can_swipe: false,
+              survey: %{meeting: meeting_payload(meeting, user.id)}
+            }
+        end
 
       meeting ->
         %{
@@ -136,6 +148,40 @@ defmodule BluetteServer.Accounts do
           can_swipe: false,
           meeting: meeting_payload(meeting, user.id)
         }
+    end
+  end
+
+  def submit_meeting_survey(%User{} = user, attrs) when is_map(attrs) do
+    mark_due_meetings_for_user(user.id)
+    mark_happening_meetings_for_user(user.id)
+
+    with {:ok, attended} <- fetch_attended(attrs),
+         %Meeting{} = meeting <- pending_due_survey_for(user.id) do
+      Repo.transaction(fn ->
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+        survey_attrs = %{
+          meeting_id: meeting.id,
+          user_id: user.id,
+          attended: attended,
+          answered_at: now
+        }
+
+        case %MeetingSurvey{} |> MeetingSurvey.create_changeset(survey_attrs) |> Repo.insert() do
+          {:ok, _survey} ->
+            refreshed_meeting = Repo.get!(Meeting, meeting.id)
+            maybe_apply_survey_outcome(refreshed_meeting, now)
+
+            %{meeting_id: meeting.id, attended: attended}
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
+        end
+      end)
+      |> unwrap_transaction()
+    else
+      nil -> {:error, :no_due_meeting_survey}
+      error -> error
     end
   end
 
@@ -435,6 +481,9 @@ defmodule BluetteServer.Accounts do
 
   defp fetch_decision(_attrs), do: {:error, :invalid_swipe_decision}
 
+  defp fetch_attended(%{"attended" => attended}) when is_boolean(attended), do: {:ok, attended}
+  defp fetch_attended(_attrs), do: {:error, :invalid_survey_attended}
+
   defp fetch_target_user(current_user_id, target_uid) do
     case Repo.get_by(User, firebase_uid: target_uid) do
       nil ->
@@ -449,10 +498,10 @@ defmodule BluetteServer.Accounts do
   end
 
   defp ensure_user_can_swipe(user_id) do
-    if upcoming_meeting_for(user_id) do
-      {:error, :meeting_in_progress}
-    else
-      :ok
+    cond do
+      upcoming_meeting_for(user_id) -> {:error, :meeting_in_progress}
+      pending_due_survey_for(user_id) -> {:error, :survey_pending}
+      true -> :ok
     end
   end
 
@@ -691,6 +740,7 @@ defmodule BluetteServer.Accounts do
       Enum.each(meetings, fn meeting ->
         due_meeting = %{meeting | status: "due", updated_at: now}
         _ = Notifications.notify_meeting_event(due_meeting, "meeting_due")
+        _ = Notifications.notify_meeting_event(due_meeting, "meeting_survey_required")
       end)
     end
   end
@@ -731,6 +781,19 @@ defmodule BluetteServer.Accounts do
     from(m in Meeting,
       where:
         m.status in ["upcoming", "happening"] and m.scheduled_for > ^cutoff and
+          (m.user_a_id == ^user_id or m.user_b_id == ^user_id),
+      order_by: [asc: m.scheduled_for],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  defp pending_due_survey_for(user_id) do
+    from(m in Meeting,
+      left_join: survey in MeetingSurvey,
+      on: survey.meeting_id == m.id and survey.user_id == ^user_id,
+      where:
+        m.status == "due" and is_nil(survey.id) and
           (m.user_a_id == ^user_id or m.user_b_id == ^user_id),
       order_by: [asc: m.scheduled_for],
       limit: 1
@@ -845,8 +908,55 @@ defmodule BluetteServer.Accounts do
     }
   end
 
+  defp maybe_apply_survey_outcome(%Meeting{} = meeting, now) do
+    surveys =
+      from(s in MeetingSurvey,
+        where: s.meeting_id == ^meeting.id
+      )
+      |> Repo.all()
+
+    if length(surveys) == 2 do
+      attended_values = Enum.map(surveys, & &1.attended)
+
+      {outcome, rank_delta} =
+        cond do
+          Enum.all?(attended_values) -> {"both_yes", @meeting_survey_rank_delta}
+          Enum.all?(attended_values, &(not &1)) -> {"both_no", -@meeting_survey_rank_delta}
+          true -> {"mixed", 0}
+        end
+
+      {updated_count, _} =
+        from(m in Meeting,
+          where: m.id == ^meeting.id and is_nil(m.survey_resolved_at)
+        )
+        |> Repo.update_all(set: [survey_outcome: outcome, survey_resolved_at: now, updated_at: now])
+
+      if updated_count == 1 do
+        if rank_delta != 0 do
+          _ = adjust_visibility_rank(meeting.user_a_id, rank_delta)
+          _ = adjust_visibility_rank(meeting.user_b_id, rank_delta)
+        end
+
+        resolved_meeting = %{meeting | survey_outcome: outcome, survey_resolved_at: now, updated_at: now}
+
+        _ =
+          Notifications.notify_meeting_event(
+            resolved_meeting,
+            "meeting_survey_resolved",
+            %{survey_outcome: outcome, rank_delta: rank_delta}
+          )
+      end
+    end
+  end
+
   defp lower_visibility_rank(%User{} = user) do
-    next_rank = max((user.visibility_rank || @default_visibility_rank) - @meeting_cancellation_penalty, 0)
+    adjust_visibility_rank(user.id, -@meeting_cancellation_penalty)
+  end
+
+  defp adjust_visibility_rank(user_id, delta) when is_integer(user_id) and is_integer(delta) do
+    user = Repo.get(User, user_id)
+    current = (user && user.visibility_rank) || @default_visibility_rank
+    next_rank = max(current + delta, 0)
 
     user
     |> change(%{visibility_rank: next_rank})

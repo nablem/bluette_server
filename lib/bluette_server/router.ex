@@ -166,6 +166,9 @@ defmodule BluetteServer.Router do
         {:error, :invalid_swipe_decision} ->
           send_json(conn, 422, %{error: "validation_failed", details: %{decision: ["must be like or pass"]}})
 
+        {:error, :survey_pending} ->
+          send_json(conn, 409, %{error: "survey_pending"})
+
         {:error, reason} ->
           send_json(conn, 409, %{error: to_string(reason)})
       end
@@ -180,6 +183,26 @@ defmodule BluetteServer.Router do
 
         {:error, :no_upcoming_meeting} ->
           send_json(conn, 404, %{error: "no_upcoming_meeting"})
+
+        {:error, reason} ->
+          send_json(conn, 409, %{error: to_string(reason)})
+      end
+    end)
+  end
+
+  post "/api/v1/home/meeting/survey" do
+    with_authenticated_user(conn, fn conn, user ->
+      attrs = %{"attended" => conn.body_params["attended"]}
+
+      case Accounts.submit_meeting_survey(user, attrs) do
+        {:ok, _survey} ->
+          send_json(conn, 200, %{home: Accounts.home_payload(user)})
+
+        {:error, :invalid_survey_attended} ->
+          send_json(conn, 422, %{error: "validation_failed", details: %{attended: ["must be true or false"]}})
+
+        {:error, :no_due_meeting_survey} ->
+          send_json(conn, 404, %{error: "no_due_meeting_survey"})
 
         {:error, reason} ->
           send_json(conn, 409, %{error: to_string(reason)})
