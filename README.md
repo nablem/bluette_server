@@ -701,6 +701,7 @@ Production defaults:
 For public HTTPS (`https://api.bluette.xyz`), run Nginx/Caddy on `443` and reverse proxy to `127.0.0.1:4000`.
 
 The deploy script is idempotent and expects that source is already cloned into `/opt/bluette_server`.
+The systemd service runs the app as an Elixir release (`_build/prod/rel/bluette_server`).
 
 ### 1) First-time server bootstrap
 
@@ -708,11 +709,13 @@ The deploy script is idempotent and expects that source is already cloned into `
 # run as root
 useradd --system --no-create-home --home-dir /opt/bluette_server --shell /usr/sbin/nologin bluette || true
 mkdir -p /opt/bluette_server
-chown bluette:bluette /opt/bluette_server
 
-# clone as service user
-sudo -u bluette git clone --branch main <repo_url> /opt/bluette_server
+# clone as root (uses root's git auth), then hand repo ownership to service user
+git clone --branch main <repo_url> /opt/bluette_server
+chown -R bluette:bluette /opt/bluette_server
 ```
+
+If you prefer cloning directly as `bluette`, configure SSH keys for that user first.
 
 ### 2) First deploy run
 
@@ -746,6 +749,8 @@ sudo ./ops/deploy.sh
 # or explicitly
 sudo BRANCH=main ./ops/deploy.sh
 ```
+
+Each deploy rebuilds the release and restarts the service.
 
 ### 4) Service checks
 

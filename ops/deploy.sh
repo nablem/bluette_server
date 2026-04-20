@@ -10,6 +10,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/bluette_server}"
 BRANCH="${BRANCH:-main}"
+RELEASE_NAME="${RELEASE_NAME:-bluette_server}"
 SERVICE_NAME="${SERVICE_NAME:-bluette}"
 SERVICE_USER="${SERVICE_USER:-bluette}"
 SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"
@@ -143,6 +144,26 @@ ensure_service_file_unprivileged() {
   fi
 }
 
+ensure_service_file_release_mode() {
+  if [ ! -f "$SERVICE_FILE" ]; then
+    return
+  fi
+
+  release_cmd="ExecStart=${APP_DIR}/_build/prod/rel/${RELEASE_NAME}/bin/${RELEASE_NAME} start"
+
+  if run_root grep -q '^ExecStart=/usr/bin/env mix run --no-halt$' "$SERVICE_FILE"; then
+    echo "==> Updating service unit to run release start"
+    run_root sed -i "s#^ExecStart=/usr/bin/env mix run --no-halt$#${release_cmd}#" "$SERVICE_FILE"
+    run_root systemctl daemon-reload
+  fi
+
+  if run_root grep -q "^ExecStart=.*/bin/${RELEASE_NAME} foreground$" "$SERVICE_FILE"; then
+    echo "==> Updating service unit command: foreground -> start"
+    run_root sed -i "s#^ExecStart=.*/bin/${RELEASE_NAME} foreground$#${release_cmd}#" "$SERVICE_FILE"
+    run_root systemctl daemon-reload
+  fi
+}
+
 validate_runtime_env() {
   echo "==> Loading runtime environment from $ENV_FILE"
   set -a
@@ -192,8 +213,8 @@ update_source() {
 }
 
 build_and_migrate() {
-  echo "==> Building project and running migrations"
-  run_as_service_user bash -lc "cd '$APP_DIR'; export MIX_ENV=prod; mix local.hex --force; mix local.rebar --force; mix deps.get --only prod; mix compile; mix ecto.migrate"
+  echo "==> Building release and running migrations"
+  run_as_service_user bash -lc "cd '$APP_DIR'; export MIX_ENV=prod; mix local.hex --force; mix local.rebar --force; mix deps.get --only prod; mix compile; mix ecto.migrate; mix release --overwrite"
 }
 
 fix_sqlite_ownership() {
@@ -231,6 +252,7 @@ main() {
   bootstrap_env_file
   bootstrap_service_file
   ensure_service_file_unprivileged
+  ensure_service_file_release_mode
   validate_runtime_env
   ensure_db_directory
   update_source
