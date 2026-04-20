@@ -18,8 +18,9 @@ Backend API for the Bluette mobile app — Elixir, Plug/Cowboy, Ecto/SQLite.
 10. [Frontend Flow](#frontend-flow)
 11. [Auth](#auth)
 12. [Local Setup](#local-setup)
-13. [Development Utilities](#development-utilities)
-14. [Tests](#tests)
+13. [VPS Deploy (systemd)](#vps-deploy-systemd)
+14. [Development Utilities](#development-utilities)
+15. [Tests](#tests)
 
 ---
 
@@ -685,6 +686,70 @@ mix ecto.migrate
 mix bluette.import_bars          # load bars catalog
 mix bluette.seed_fake_profiles   # 30 fake users
 mix run --no-halt                # server at http://localhost:4000
+```
+
+---
+
+## VPS Deploy (systemd)
+
+Production defaults:
+
+- HTTP port: `80`
+- SQLite DB file (prod): `/var/lib/bluette_server/bluette_server.db`
+- Auth verifier: Firebase (`FIREBASE_PROJECT_ID` is required)
+
+The deploy script is idempotent and expects that source is already cloned into `/opt/bluette_server`.
+
+### 1) First-time server bootstrap
+
+```sh
+# run as root
+useradd --system --no-create-home --home-dir /opt/bluette_server --shell /usr/sbin/nologin bluette || true
+mkdir -p /opt/bluette_server
+chown bluette:bluette /opt/bluette_server
+
+# clone as service user
+sudo -u bluette git clone --branch main <repo_url> /opt/bluette_server
+```
+
+### 2) First deploy run
+
+```sh
+cd /opt/bluette_server
+sudo ./ops/deploy.sh
+```
+
+If `/etc/bluette/bluette.env` does not exist, the script creates it from `ops/bluette.env.example` and exits.
+
+Edit env and set at least:
+
+```sh
+sudo nano /etc/bluette/bluette.env
+# required
+# FIREBASE_PROJECT_ID=your-firebase-project-id
+```
+
+Run deploy again:
+
+```sh
+cd /opt/bluette_server
+sudo ./ops/deploy.sh
+```
+
+### 3) Ongoing deploys
+
+```sh
+cd /opt/bluette_server
+sudo ./ops/deploy.sh
+# or explicitly
+sudo BRANCH=main ./ops/deploy.sh
+```
+
+### 4) Service checks
+
+```sh
+sudo systemctl status bluette --no-pager
+sudo journalctl -u bluette -f
 ```
 
 ---
