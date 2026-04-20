@@ -1,7 +1,7 @@
 import Config
 
 config :bluette_server,
-  port: 80,
+  port: 4000,
   auth_verifier: BluetteServer.Auth.FirebaseVerifier,
   firebase_project_id: System.get_env("FIREBASE_PROJECT_ID")
 

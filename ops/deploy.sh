@@ -130,6 +130,19 @@ bootstrap_service_file() {
   run_root systemctl enable "$SERVICE_NAME"
 }
 
+ensure_service_file_unprivileged() {
+  if [ ! -f "$SERVICE_FILE" ]; then
+    return
+  fi
+
+  if run_root grep -Eq '^(AmbientCapabilities|CapabilityBoundingSet)=CAP_NET_BIND_SERVICE$' "$SERVICE_FILE"; then
+    echo "==> Removing privileged bind capabilities from service unit"
+    run_root sed -i '/^AmbientCapabilities=CAP_NET_BIND_SERVICE$/d' "$SERVICE_FILE"
+    run_root sed -i '/^CapabilityBoundingSet=CAP_NET_BIND_SERVICE$/d' "$SERVICE_FILE"
+    run_root systemctl daemon-reload
+  fi
+}
+
 validate_runtime_env() {
   echo "==> Loading runtime environment from $ENV_FILE"
   set -a
@@ -217,6 +230,7 @@ main() {
   ensure_source_checkout_exists
   bootstrap_env_file
   bootstrap_service_file
+  ensure_service_file_unprivileged
   validate_runtime_env
   ensure_db_directory
   update_source

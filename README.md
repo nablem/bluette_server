@@ -694,9 +694,11 @@ mix run --no-halt                # server at http://localhost:4000
 
 Production defaults:
 
-- HTTP port: `80`
+- HTTP port: `4000`
 - SQLite DB file (prod): `/var/lib/bluette_server/bluette_server.db`
 - Auth verifier: Firebase (`FIREBASE_PROJECT_ID` is required)
+
+For public HTTPS (`https://api.bluette.xyz`), run Nginx/Caddy on `443` and reverse proxy to `127.0.0.1:4000`.
 
 The deploy script is idempotent and expects that source is already cloned into `/opt/bluette_server`.
 
