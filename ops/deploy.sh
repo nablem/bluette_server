@@ -163,10 +163,24 @@ validate_runtime_env() {
   source "$ENV_FILE"
   set +a
 
-  if [ -z "${FIREBASE_PROJECT_ID:-}" ] || [ "${FIREBASE_PROJECT_ID}" = "replace-me" ]; then
-    echo "ERROR: FIREBASE_PROJECT_ID must be set in $ENV_FILE"
-    exit 1
-  fi
+  auth_verifier="${AUTH_VERIFIER:-firebase}"
+  auth_verifier="$(printf '%s' "$auth_verifier" | tr '[:upper:]' '[:lower:]')"
+
+  case "$auth_verifier" in
+    firebase)
+      if [ -z "${FIREBASE_PROJECT_ID:-}" ] || [ "${FIREBASE_PROJECT_ID}" = "replace-me" ]; then
+        echo "ERROR: FIREBASE_PROJECT_ID must be set in $ENV_FILE when AUTH_VERIFIER=firebase"
+        exit 1
+      fi
+      ;;
+    mock)
+      echo "==> AUTH_VERIFIER=mock (Firebase verification disabled)"
+      ;;
+    *)
+      echo "ERROR: AUTH_VERIFIER must be 'firebase' or 'mock' (got: ${AUTH_VERIFIER:-})"
+      exit 1
+      ;;
+  esac
 }
 
 ensure_db_directory() {

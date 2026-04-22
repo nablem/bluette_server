@@ -656,7 +656,7 @@ Trigger `GET /api/v1/home` when receiving these events:
 |---|---|---|
 | `dev` | `MockVerifier` | `mock:<uid>:<email>` |
 | `test` | `MockVerifier` | `mock:<uid>:<email>` |
-| `prod` | `FirebaseVerifier` | Firebase RS256 JWT |
+| `prod` | `FirebaseVerifier` (default) or `MockVerifier` via env | Firebase RS256 JWT (firebase mode) or `mock:<uid>:<email>` (mock mode) |
 
 ### Mock token format
 
@@ -664,7 +664,13 @@ Trigger `GET /api/v1/home` when receiving these events:
 
 ### Firebase (prod)
 
-Set `FIREBASE_PROJECT_ID` env var. Application fails to start if missing.
+Set `AUTH_VERIFIER=firebase` (default) and `FIREBASE_PROJECT_ID`. Application fails to start if project id is missing in firebase mode.
+
+### Mock in prod-like environments
+
+Set `AUTH_VERIFIER=mock` to accept mock bearer tokens on that server:
+
+`Authorization: Bearer mock:user_1:user1@example.com`
 
 ### Flutter mobile test flow
 
@@ -696,7 +702,8 @@ Production defaults:
 
 - HTTP port: `4000`
 - SQLite DB file (prod): `/var/lib/bluette_server/bluette_server.db`
-- Auth verifier: Firebase (`FIREBASE_PROJECT_ID` is required)
+- Auth verifier: `AUTH_VERIFIER=firebase|mock` (`firebase` default)
+- `FIREBASE_PROJECT_ID` is required only when `AUTH_VERIFIER=firebase`
 
 For public HTTPS (`https://api.bluette.xyz`), run Nginx/Caddy on `443` and reverse proxy to `127.0.0.1:4000`.
 
@@ -731,7 +738,9 @@ Edit env and set at least:
 ```sh
 sudo nano /etc/bluette/bluette.env
 # required
+# AUTH_VERIFIER=firebase
 # FIREBASE_PROJECT_ID=your-firebase-project-id
+# For mock mode on that server: AUTH_VERIFIER=mock
 ```
 
 Run deploy again:
