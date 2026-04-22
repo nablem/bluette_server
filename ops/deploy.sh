@@ -94,6 +94,11 @@ ensure_source_checkout_exists() {
   exit 1
 }
 
+ensure_repo_ownership() {
+  echo "==> Ensuring repository ownership for service user"
+  run_root chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR"
+}
+
 bootstrap_env_file() {
   if [ -f "$ENV_FILE" ]; then
     return
@@ -249,6 +254,7 @@ main() {
   preflight_checks
   bootstrap_os_resources
   ensure_source_checkout_exists
+  ensure_repo_ownership
   bootstrap_env_file
   bootstrap_service_file
   ensure_service_file_unprivileged
