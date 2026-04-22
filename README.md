@@ -745,6 +745,7 @@ sudo ./ops/deploy.sh
 
 ```sh
 cd /opt/bluette_server
+git pull --ff-only origin main
 sudo ./ops/deploy.sh
 # or explicitly
 sudo BRANCH=main ./ops/deploy.sh

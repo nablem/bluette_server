@@ -61,14 +61,6 @@ run_root() {
   fi
 }
 
-run_as_service_user() {
-  if [ "$(id -un)" = "$SERVICE_USER" ]; then
-    "$@"
-  else
-    run_root sudo -u "$SERVICE_USER" "$@"
-  fi
-}
-
 bootstrap_os_resources() {
   echo "==> Ensuring service user and directories"
 
@@ -90,13 +82,8 @@ ensure_source_checkout_exists() {
   echo "ERROR: $APP_DIR is not a git repository"
   echo "Clone your project first, then re-run deploy."
   echo "Example:"
-  echo "  sudo -u $SERVICE_USER git clone --branch $BRANCH <repo_url> $APP_DIR"
+  echo "  git clone --branch $BRANCH <repo_url> $APP_DIR"
   exit 1
-}
-
-ensure_repo_ownership() {
-  echo "==> Ensuring repository ownership for service user"
-  run_root chown -R "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR"
 }
 
 bootstrap_env_file() {
@@ -199,27 +186,27 @@ ensure_db_directory() {
 
 update_source() {
   echo "==> Updating source from origin/$BRANCH"
-  run_as_service_user git -C "$APP_DIR" config --global --add safe.directory "$APP_DIR"
-  run_as_service_user git -C "$APP_DIR" fetch origin "$BRANCH"
-  run_as_service_user git -C "$APP_DIR" checkout "$BRANCH"
+  git config --global --add safe.directory "$APP_DIR"
+  git -C "$APP_DIR" fetch origin "$BRANCH"
+  git -C "$APP_DIR" checkout "$BRANCH"
 
-  if [ -n "$(run_as_service_user git -C "$APP_DIR" status --porcelain)" ]; then
+  if [ -n "$(git -C "$APP_DIR" status --porcelain)" ]; then
     if [ "$AUTO_STASH_DIRTY_REPO" = "1" ]; then
       stash_name="deploy-auto-$(date +%s)"
       echo "==> Local git changes detected; stashing automatically ($stash_name)"
-      run_as_service_user git -C "$APP_DIR" stash push --include-untracked -m "$stash_name" >/dev/null
+      git -C "$APP_DIR" stash push --include-untracked -m "$stash_name" >/dev/null
     else
       echo "ERROR: local git changes detected. Commit/stash or set AUTO_STASH_DIRTY_REPO=1"
       exit 1
     fi
   fi
 
-  run_as_service_user git -C "$APP_DIR" pull --ff-only origin "$BRANCH"
+  git -C "$APP_DIR" pull --ff-only origin "$BRANCH"
 }
 
 build_and_migrate() {
   echo "==> Building release and running migrations"
-  run_as_service_user bash -lc "cd '$APP_DIR'; export MIX_ENV=prod; mix local.hex --force; mix local.rebar --force; mix deps.get --only prod; mix compile; mix ecto.migrate; mix release --overwrite"
+  bash -lc "cd '$APP_DIR'; export MIX_ENV=prod; mix local.hex --force; mix local.rebar --force; mix deps.get --only prod; mix compile; mix ecto.migrate; mix release --overwrite"
 }
 
 fix_sqlite_ownership() {
@@ -254,7 +241,6 @@ main() {
   preflight_checks
   bootstrap_os_resources
   ensure_source_checkout_exists
-  ensure_repo_ownership
   bootstrap_env_file
   bootstrap_service_file
   ensure_service_file_unprivileged
