@@ -15,3 +15,5 @@ config :bluette_server,
 config :bluette_server, BluetteServer.Repo,
   database: System.get_env("DATABASE_PATH", "/var/lib/bluette_server/bluette_server.db"),
   journal_mode: :wal
+
+config :tzdata, :autoupdate, :disabled
